@@ -25,6 +25,8 @@ export const {
   uri: URI,
   db: DB,
   kind: TARGET_KIND,
+  fingerprint: WORLD_FINGERPRINT,
+  desktop: DESKTOP_SHELL,
 } = resolveConnectionConfig(readShellDocument(globalThis), import.meta.env.DEV);
 // dev-observability: resolve VITE_MR_DEVLOG at MODULE scope too, for the same
 // F-3 reason — the resolver RETHROWS in dev, and a throw from inside main() could be

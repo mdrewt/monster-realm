@@ -28,6 +28,7 @@ import type { SessionState } from '../ui/sessionModel';
 import { subscriptionErrorMessage } from '../ui/statusModel';
 import {
   createAuthTokenGate,
+  forgetDeviceToken,
   tokenPersistenceFor,
   wasEverAuthenticated,
   writeAuthKind,
@@ -95,6 +96,7 @@ import {
   syncScope,
   wantedZones,
 } from './worldScope';
+import { firstContact, type TicketSource, type WorldGateEvent, worldEntryFor } from './worldTicket';
 
 /** How often the world scope is re-evaluated with nothing else happening: it is what ends a
  *  linger, retries a rejected set and notices one that never applied. */
@@ -159,10 +161,23 @@ export interface ConnectionOptions {
   readonly authIssuer?: string;
   readonly authClientId?: string;
   readonly authRedirectUri?: string;
-  /** What the shell document says the server is. It decides where the anonymous reconnect token
-   *  is kept (`tokenPersistenceFor`): on the device for `local` and `private`, per tab for
-   *  `official` and `test`. */
+  /** What the shell document says the server is. With `desktop` it decides where the anonymous
+   *  reconnect token is kept (`tokenPersistenceFor`). A `local` or `private` target is also a
+   *  world that checks the player's account itself: its connections read their own
+   *  `my_world_account` and `my_world_move` rows and pass the world's gate before they join. */
   readonly targetKind: TargetKind;
+  /** Whether the page runs in the desktop shell. Absent or false: a browser, which keeps every
+   *  target's reconnect token per tab and removes one a `local` or `private` target left on the
+   *  device. */
+  readonly desktop?: boolean;
+  /** The world's name as this client authenticated it, and where a ticket for it comes from.
+   *  Present only when a ticket can be had; read only for a `local` or `private` target. With it,
+   *  a connection the world does not know has the world check the account before it joins. */
+  readonly world?: { readonly name: string; readonly tickets: TicketSource };
+  /** What a `local` or `private` world's account gate shows next: where the character plays, why
+   *  no check could be made, what the check answered, or that the world accepted the account.
+   *  Never `joined`: the caller sees the own player row itself. */
+  readonly onWorldGate?: (event: WorldGateEvent) => void;
   /** The protocol this client speaks (client-wasm's `protocol_version()`). Each connection checks
    *  it against the server's `module_info` row before it subscribes anything else. */
   readonly clientProtocol: number;
@@ -211,6 +226,11 @@ export interface Connection {
   join(): void;
   /** The `character` query sets the live connection holds (worldScope.ts). */
   worldScope(): ScopeSummary;
+  /** The player asked for the world's account check: a ticket, `check_account`, then the join,
+   *  on the live link, whatever rows the world holds. A source with no session starts the
+   *  player's sign-in. A no-op while frozen or unbuilt, with no `world`, toward a target that is
+   *  not `local` or `private`, and while a check is in flight on this connection. */
+  checkIn(): void;
 }
 
 /** The one error `join_game` answers a caller the server does not admit as an owner of the game
@@ -264,12 +284,22 @@ export function connect(opts: ConnectionOptions): Connection {
   // so a per-build gate would reset the counter on every scheduleRebuild() attempt,
   // suppression could never engage, and a host reset would loop forever re-supplying a
   // permanently rejected token.
-  const auth = createAuthTokenGate(
-    opts.uri,
-    opts.db,
-    globalThis,
-    tokenPersistenceFor(opts.targetKind),
-  );
+  const tokenPersistence = tokenPersistenceFor(opts.targetKind, opts.desktop === true);
+  // A single-player world or a friends server: it checks the player's account itself.
+  const isWorld = opts.targetKind === 'local' || opts.targetKind === 'private';
+  // A browser keeps such a world's token per tab, and a token a page left on the device goes
+  // before any build could supply it.
+  if (isWorld && tokenPersistence === 'tab') forgetDeviceToken(globalThis, opts.uri, opts.db);
+  const auth = createAuthTokenGate(opts.uri, opts.db, globalThis, tokenPersistence);
+  const world = isWorld ? opts.world : undefined;
+  // Whether this page has already run a first contact nobody asked for. One can cost the
+  // account a ticket, and a host that drops the link would otherwise draw one per reconnect.
+  let firstContactSpent = false;
+  // What the world's gate was last told to raise by a first contact: said again on each later
+  // snapshot of an identity the world still does not know.
+  let lastRaised: WorldGateEvent = { kind: 'sign-in-needed' };
+  // The build generation a first contact is in flight on, 0 for none: a rebuild frees it.
+  let contactGen = 0;
   let identity = '';
   let hadSession = false; // distinguishes the first connect from a reconnect (survives rebuilds)
   // App-level reconnect policy: pure transitions live in
@@ -411,7 +441,12 @@ export function connect(opts: ConnectionOptions): Connection {
    * means the new connection silently ingests nothing for it (re-wire
    * everything or the reconnect looks connected but stays empty).
    */
-  function wireTables(conn: DbConnection, runScope: () => void, onOwnAccount: () => void): void {
+  function wireTables(
+    conn: DbConnection,
+    runScope: () => void,
+    onOwnAccount: () => void,
+    onOwnMove: (movedAtMs: number) => void,
+  ): void {
     // A row handler that throws stops the SDK dispatching the rest of that message, whose rows are
     // already in the SDK cache: a view whose own handler never ran would stay clean and stale. So
     // a throw from any other table's handler marks every owner view and schedules the flush, then
@@ -826,13 +861,91 @@ export function connect(opts: ConnectionOptions): Connection {
       conn.db[view].onInsert(viewChanged);
       conn.db[view].onDelete(viewChanged);
     }
+
+    // my_world_move is the owner-scoped VIEW over the PRIVATE world_move table: the caller's own
+    // row says its character plays under another identity since that time. Nothing draws it, so
+    // it goes to no store collection: an insert is reported to the world's gate, and the join
+    // gate reads the cache. Its delete (the next accepted check) needs no handler.
+    if (isWorld) {
+      conn.db.myWorldMove.onInsert(
+        recoverViewsOnThrow((_ctx, row) => {
+          if (row.identity.toHexString() === identity) onOwnMove(Number(row.movedAtMs));
+        }),
+      );
+    }
+  }
+
+  /** Whether `c`'s cache holds this connection's own `my_world_account` row: the world knows
+   *  the identity, whatever the row says about owning the game. */
+  function worldKnowsIdentity(c: DbConnection): boolean {
+    for (const row of c.db.myWorldAccount.iter()) {
+      if (row.identity.toHexString() === identity) return true;
+    }
+    return false;
+  }
+
+  /** When this connection's character moved to another identity, by `c`'s cache; `undefined`
+   *  when it holds no own `my_world_move` row. */
+  function ownMoveTime(c: DbConnection): number | undefined {
+    for (const row of c.db.myWorldMove.iter()) {
+      if (row.identity.toHexString() === identity) return Number(row.movedAtMs);
+    }
+    return undefined;
+  }
+
+  /**
+   * A world's first contact with this identity on the raw connection `raw` (a ticket is a bearer
+   * credential, so it never passes the dev reducer-arg logger): the world checks the account, and
+   * an accepted one joins. `asked` is whether the player asked: only then does a source with no
+   * session start the sign-in, and a sign-in that cannot start is reported as the service out of
+   * reach. One runs at a time per build, the sign-in's start included, and an outcome that
+   * settles after the link dropped or a newer build started reports nothing and joins nothing.
+   */
+  function runFirstContact(raw: DbConnection, asked: boolean): void {
+    if (world === undefined || contactGen === buildGen) return;
+    const gen = buildGen;
+    contactGen = gen;
+    const { tickets } = world;
+    const live = (): boolean => gen === buildGen && !linkFrozen(state);
+    void firstContact({
+      tickets,
+      world: world.name,
+      check: (ticket) => raw.procedures.checkAccount({ ticket }),
+      live,
+    })
+      .then(async (outcome) => {
+        if (outcome.kind === 'superseded' || !live()) return;
+        if (outcome.kind === 'entitled' || outcome.kind === 'no-check') {
+          // A build that checks no account answers the join itself.
+          if (outcome.kind === 'entitled') {
+            lastRaised = { kind: 'sign-in-needed' };
+            opts.onWorldGate?.(outcome);
+          }
+          if (current !== undefined) attemptJoin(current, name, opts.onError);
+          return;
+        }
+        const raise = (event: WorldGateEvent): void => {
+          lastRaised = event;
+          opts.onWorldGate?.(event);
+        };
+        raise(outcome);
+        if (asked && outcome.kind === 'sign-in-needed' && !(await tickets.signIn()) && live()) {
+          raise({ kind: 'unreachable' });
+        }
+      })
+      .catch((err) => console.error('[net] world gate handler threw', err))
+      .finally(() => {
+        if (contactGen === gen) contactGen = 0;
+      });
   }
 
   /** Issue joinGame through a WRAPPED connection — the ONE join path (onApplied, the
    *  cancel-deletion re-join, and join() for the claim flow). Extracted ONCE:
    *  devLog builds a fresh Proxy per call, so an inline re-wrap double-logs every reducer call.
    *  The server's ownership refusal turns `accountRequired` on and goes to onOwnershipRefused,
-   *  whichever of the three asked. */
+   *  whichever of them asked. A `local` or `private` world's refusal turns nothing on and goes to
+   *  the world's gate, or to onOwnershipRefused when the world knows the identity and this client
+   *  has no ticket source. */
   function attemptJoin(
     conn: DbConnection,
     name: string,
@@ -845,7 +958,23 @@ export function connect(opts: ConnectionOptions): Connection {
         // The server admits only a player who owns the game. A refusal that settles after a newer
         // build was started reports nothing: that build's own join decides.
         if (gen !== buildGen) return;
-        accountRequired = true;
+        if (isWorld) {
+          // A world entitles an identity by its account row alone. With no row the account was
+          // never checked, which is not the same as not owning the game: the first visit needs
+          // the account service. A world's refusal never turns `accountRequired` on: the world
+          // asks about a known account again by itself, so the next snapshot's join finds out.
+          const raw = current === undefined ? undefined : rawConnectionOf.get(current);
+          if (raw === undefined || !worldKnowsIdentity(raw)) {
+            opts.onWorldGate?.({ kind: 'unreachable' });
+            return;
+          }
+          if (world !== undefined) {
+            opts.onWorldGate?.({ kind: 'not-entitled' });
+            return;
+          }
+        } else {
+          accountRequired = true;
+        }
         opts.onOwnershipRefused?.();
         return;
       }
@@ -913,6 +1042,14 @@ export function connect(opts: ConnectionOptions): Connection {
     // build, and sendClaim sends nothing once the code is gone.
     const sendAwaitedClaim = (): void => {
       if (claim === 'awaiting') sendClaim(conn);
+    };
+    // The move this build last reported to the world's gate: the join gate and the row's own
+    // insert callback both see a move, and each one is said once.
+    let reportedMoveAt: number | undefined;
+    const reportMove = (movedAtMs: number): void => {
+      if (stale() || reportedMoveAt === movedAtMs) return;
+      reportedMoveAt = movedAtMs;
+      opts.onWorldGate?.({ kind: 'moved', movedAtMs });
     };
 
     // The world scope of THIS build: which `character` query sets it holds beyond the base set.
@@ -1037,7 +1174,8 @@ export function connect(opts: ConnectionOptions): Connection {
               // the backoff ladder here (the ONLY attempt reset), and clear any session terminal.
               state = onConnected(state);
               sessionMode = 'hidden';
-              // Join gate, re-evaluated FRESH every applied snapshot. An anonymous build joins
+              // Join gate, re-evaluated FRESH every applied snapshot. Past a world's own gate
+              // (below), an anonymous build joins
               // unless the server needs an account (`accountRequired`): then it sends nothing and
               // says so, and the caller offers sign-in. Otherwise it always joins: the idempotent
               // A4 re-join (server on_disconnect deletes the player + character rows when the
@@ -1046,7 +1184,25 @@ export function connect(opts: ConnectionOptions): Connection {
               // consulted in it (AUTH-52).
               const codeUnconsumed = claimCode.hasUnconsumed(globalThis, opts.uri, opts.db);
               const isAccount = credential.kind === 'account';
-              if (accountRequired && !isAccount) {
+              // A world's own gate comes first, from this connection's two rows there, which
+              // are in the cache of `conn` by now as the own account row below is. A character
+              // that plays under another identity sends nothing. A world that does not know
+              // this identity checks the account before the join, when a ticket can be had: the
+              // page's first such snapshot asks by itself, a later one says again what the gate
+              // was last told and waits for `checkIn`.
+              const entry = isWorld
+                ? worldEntryFor({ known: worldKnowsIdentity(conn), movedAtMs: ownMoveTime(conn) })
+                : undefined;
+              if (entry?.kind === 'moved') {
+                reportMove(entry.movedAtMs);
+              } else if (entry?.kind === 'first-contact' && world !== undefined) {
+                if (firstContactSpent) {
+                  opts.onWorldGate?.(lastRaised);
+                } else {
+                  firstContactSpent = true;
+                  runFirstContact(c, false);
+                }
+              } else if (accountRequired && !isAccount) {
                 opts.onAccountRequired?.();
               } else if (!isAccount || !codeUnconsumed) {
                 attemptJoin(wrapReducerLogging(c, opts.onSend), name, opts.onError);
@@ -1173,6 +1329,11 @@ export function connect(opts: ConnectionOptions): Connection {
               // table: each client receives only the sessions it is in. Subscribing `trade_session`
               // itself would error the whole batch.
               'SELECT * FROM my_trade_session',
+              // my_world_account and my_world_move are the owner-scoped VIEWS over the PRIVATE
+              // world_account and world_move tables: the account a world holds for this identity
+              // and where its character went. Only a world's connection reads them (the join gate
+              // above, from the cache), so only it subscribes them.
+              ...(isWorld ? ['SELECT * FROM my_world_account', 'SELECT * FROM my_world_move'] : []),
             ]);
         };
         // The protocol check (protocolCheck.ts): `module_info` alone first. Until its verdict
@@ -1238,7 +1399,7 @@ export function connect(opts: ConnectionOptions): Connection {
         handleDrop();
       })
       .build();
-    wireTables(conn, runScope, sendAwaitedClaim);
+    wireTables(conn, runScope, sendAwaitedClaim, reportMove);
     // A new connection is a new cache: every owner view is rebuilt from it on the next batch,
     // whether or not this rebuild reset the store (reconnectNow and continueAnonymously do not).
     ownerViews.markAllDirty();
@@ -1460,5 +1621,10 @@ export function connect(opts: ConnectionOptions): Connection {
       attemptJoin(current, name, opts.onError);
     },
     worldScope: () => scopeSummary(),
+    checkIn: () => {
+      if (current === undefined || linkFrozen(state)) return;
+      const raw = rawConnectionOf.get(current);
+      if (raw !== undefined) runFirstContact(raw, true);
+    },
   };
 }

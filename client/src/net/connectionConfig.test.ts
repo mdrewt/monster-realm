@@ -218,6 +218,8 @@ describe('resolveConnectionConfig refuses a malformed document in every build', 
         uri: GOOD.uri,
         db: GOOD.db,
         kind: isDev ? 'test' : 'private',
+        fingerprint: undefined,
+        desktop: false,
       });
     }
   });
@@ -245,7 +247,13 @@ describe('resolveConnectionConfig accepts a valid document exactly', () => {
         withConnection({ uri: `  ${uri}\t`, db: ' realm-one ', kind: 'official' }),
         isDev,
       );
-      expect(result).toStrictEqual({ uri, db: 'realm-one', kind: 'official' });
+      expect(result).toStrictEqual({
+        uri,
+        db: 'realm-one',
+        kind: 'official',
+        fingerprint: undefined,
+        desktop: false,
+      });
     }
   });
 
@@ -256,6 +264,8 @@ describe('resolveConnectionConfig accepts a valid document exactly', () => {
       uri: GOOD.uri,
       db: GOOD.db,
       kind: 'private',
+      fingerprint: undefined,
+      desktop: false,
     });
   });
 
@@ -272,6 +282,8 @@ describe('resolveConnectionConfig accepts a valid document exactly', () => {
         uri: GOOD.uri,
         db: GOOD.db,
         kind: isDev ? 'test' : 'private',
+        fingerprint: undefined,
+        desktop: false,
       });
     }
   });
@@ -280,7 +292,7 @@ describe('resolveConnectionConfig accepts a valid document exactly', () => {
     const connection = { ...GOOD, kind: 'test' };
     const result = resolveConnectionConfig(withConnection(connection), true);
     expect(result).not.toBe(connection);
-    expect(result).toStrictEqual(connection);
+    expect(result).toStrictEqual({ ...connection, fingerprint: undefined, desktop: false });
   });
 
   it('a production build accepts names that merely start with the development database, case kept', () => {
@@ -300,6 +312,8 @@ describe('resolveConnectionConfig accepts a valid document exactly', () => {
         uri: 'wss://prod.example:3000',
         db: 'prod-realm',
         kind: isDev ? 'test' : 'private',
+        fingerprint: undefined,
+        desktop: false,
       });
     }
   });
@@ -311,6 +325,8 @@ describe('resolveConnectionConfig with no document, and the kind default', () =>
       uri: DEV_URI,
       db: DEV_DB,
       kind: 'test',
+      fingerprint: undefined,
+      desktop: false,
     });
   });
 
@@ -338,6 +354,8 @@ describe('a production build refuses the development database in any letter case
       uri: GOOD.uri,
       db: db.trim(),
       kind: 'test',
+      fingerprint: undefined,
+      desktop: false,
     });
   });
 });
@@ -433,6 +451,8 @@ describe('resolveConnectionConfig reads each field once and returns what it vali
       uri: GOOD.uri,
       db: 'realm-first',
       kind: 'local',
+      fingerprint: undefined,
+      desktop: false,
     });
     expect(counts).toEqual({ connection: 1, db: 1, kind: 1 });
   });
@@ -519,10 +539,197 @@ describe('resolveConnectionConfig properties', () => {
             uri,
             db,
             kind: kind ?? (isDev ? 'test' : 'private'),
+            fingerprint: undefined,
+            desktop: false,
           });
         },
       ),
       { numRuns: 300 },
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The page's host (`host`) and the world's certificate fingerprint (`connection.fingerprint`).
+// ---------------------------------------------------------------------------
+
+const HOST_MESSAGE = 'shell document: host must be "desktop"';
+const FP_TYPE_MESSAGE = 'shell document: connection.fingerprint must be a string';
+const FP_SHAPE_MESSAGE =
+  'shell document: connection.fingerprint must be 1 to 128 characters of A-Z, a-z, 0-9, "-" or "_"';
+
+/** The message `doc` is refused with under `isDev`; fails the test when it is accepted. */
+function refusalMessage(doc: unknown, isDev: boolean): string {
+  const err = thrown(() => resolveConnectionConfig(doc, isDev));
+  expect(err, `isDev=${isDev}: refused with an Error, not returned`).toBeInstanceOf(Error);
+  return (err as Error).message;
+}
+
+describe('resolveConnectionConfig: host', () => {
+  it('host "desktop" resolves desktop true with every kind, in both builds [lpw-24.7]', () => {
+    for (const isDev of [true, false]) {
+      for (const kind of TARGET_KINDS) {
+        expect(
+          resolveConnectionConfig({ connection: { ...GOOD, kind }, host: 'desktop' }, isDev),
+        ).toStrictEqual({
+          uri: GOOD.uri,
+          db: GOOD.db,
+          kind,
+          fingerprint: undefined,
+          desktop: true,
+        });
+      }
+    }
+  });
+
+  it('a document with no host resolves desktop false [lpw-24.7]', () => {
+    for (const isDev of [true, false]) {
+      expect(
+        resolveConnectionConfig({ connection: { ...GOOD, kind: 'local' } }, isDev).desktop,
+      ).toBe(false);
+    }
+  });
+
+  it.each([
+    ['"Desktop"', 'Desktop'],
+    ['"DESKTOP"', 'DESKTOP'],
+    ['" desktop"', ' desktop'],
+    ['"desktop "', 'desktop '],
+    ['"browser"', 'browser'],
+    ['the empty string', ''],
+    ['true', true],
+    ['false', false],
+    ['null', null],
+    ['undefined as an own property', undefined],
+    ['a number', 1],
+    ['an object', { host: 'desktop' }],
+    ['an array', ['desktop']],
+  ])('host %s is refused with exactly the host message, in both builds [lpw-24.7]', (_label, host) => {
+    for (const isDev of [true, false]) {
+      expect(refusalMessage({ connection: { ...GOOD }, host }, isDev)).toBe(HOST_MESSAGE);
+    }
+  });
+
+  it('a refused host value never appears in the message [lpw-24.7]', () => {
+    expect(refusalMessage({ connection: { ...GOOD }, host: 'desk-SENTINELH7' }, false)).toBe(
+      HOST_MESSAGE,
+    );
+  });
+
+  it('an inherited host is ignored: desktop false [lpw-24.7]', () => {
+    const doc = Object.assign(Object.create({ host: 'desktop' }) as object, {
+      connection: { ...GOOD },
+    });
+    expect(resolveConnectionConfig(doc, false).desktop).toBe(false);
+  });
+
+  it('reads host exactly once and resolves its first value [lpw-24.7]', () => {
+    let reads = 0;
+    const doc = { connection: { ...GOOD } };
+    Object.defineProperty(doc, 'host', {
+      enumerable: true,
+      get: () => {
+        reads += 1;
+        return reads === 1 ? 'desktop' : 'browser';
+      },
+    });
+    expect(resolveConnectionConfig(doc, false).desktop).toBe(true);
+    expect(reads).toBe(1);
+  });
+
+  it('a host key inside connection is refused as an unknown connection key [lpw-24.7]', () => {
+    expectRefused(withField('host', 'desktop'), false, 'connection');
+  });
+});
+
+describe('resolveConnectionConfig: connection.fingerprint', () => {
+  const CHARSET_128 = `${'A'.repeat(32)}${'z'.repeat(32)}${'0123456789'.repeat(6)}-_${'q'.repeat(2)}`;
+
+  it.each([
+    ['one character', 'a'],
+    ['every allowed character class', 'Az09-_'],
+    ['128 characters', CHARSET_128],
+  ])('accepts %s verbatim with every kind, in both builds [lpw-24.1]', (_label, fingerprint) => {
+    expect(CHARSET_128).toHaveLength(128);
+    for (const isDev of [true, false]) {
+      for (const kind of TARGET_KINDS) {
+        expect(
+          resolveConnectionConfig(withConnection({ ...GOOD, kind, fingerprint }), isDev),
+        ).toStrictEqual({ uri: GOOD.uri, db: GOOD.db, kind, fingerprint, desktop: false });
+      }
+    }
+  });
+
+  it('accepts a fingerprint beside host "desktop" [lpw-24.1]', () => {
+    expect(
+      resolveConnectionConfig(
+        { connection: { ...GOOD, kind: 'local', fingerprint: 'Fp_9-xyz' }, host: 'desktop' },
+        false,
+      ),
+    ).toStrictEqual({
+      uri: GOOD.uri,
+      db: GOOD.db,
+      kind: 'local',
+      fingerprint: 'Fp_9-xyz',
+      desktop: true,
+    });
+  });
+
+  it.each([
+    ['a number', 7],
+    ['null', null],
+    ['undefined as an own property', undefined],
+    ['true', true],
+    ['an object', { value: 'abc' }],
+    ['an array', ['abc']],
+  ])('a fingerprint that is %s is refused with exactly the string message [lpw-24.1]', (_label, fingerprint) => {
+    for (const isDev of [true, false]) {
+      expect(refusalMessage(withField('fingerprint', fingerprint), isDev)).toBe(FP_TYPE_MESSAGE);
+    }
+  });
+
+  it.each([
+    ['the empty string', ''],
+    ['129 characters', `${CHARSET_128}a`],
+    ['a leading space (no trim)', ' abc'],
+    ['a trailing space (no trim)', 'abc '],
+    ['a trailing newline (no trim)', `abc${String.fromCharCode(10)}`],
+    ['a dot', 'a.b'],
+    ['a plus', 'a+b'],
+    ['a slash', 'a/b'],
+    ['an equals sign', 'abc='],
+    ['a colon', 'sha256:abc'],
+    ['a non-ASCII letter', `caf${E_ACUTE}`],
+  ])('a fingerprint holding %s is refused with exactly the shape message [lpw-24.1]', (_label, fingerprint) => {
+    for (const isDev of [true, false]) {
+      expect(refusalMessage(withField('fingerprint', fingerprint), isDev)).toBe(FP_SHAPE_MESSAGE);
+    }
+  });
+
+  it('a refused fingerprint value never appears in the message [lpw-24.1]', () => {
+    expect(refusalMessage(withField('fingerprint', 'fp.SENTINELF2'), true)).toBe(FP_SHAPE_MESSAGE);
+  });
+
+  it('an inherited fingerprint is ignored: undefined [lpw-24.1]', () => {
+    const connection = Object.assign(Object.create({ fingerprint: 'abc' }) as object, GOOD);
+    expect(resolveConnectionConfig(withConnection(connection), false).fingerprint).toBeUndefined();
+  });
+
+  it('reads connection.fingerprint exactly once and resolves its first value [lpw-24.1]', () => {
+    let reads = 0;
+    const connection = { ...GOOD };
+    Object.defineProperty(connection, 'fingerprint', {
+      enumerable: true,
+      get: () => {
+        reads += 1;
+        return reads === 1 ? 'first-fp' : 'not a fingerprint';
+      },
+    });
+    expect(resolveConnectionConfig(withConnection(connection), false).fingerprint).toBe('first-fp');
+    expect(reads).toBe(1);
+  });
+
+  it('a top-level fingerprint key is refused as an unknown document key [lpw-24.1]', () => {
+    expectRefused({ connection: { ...GOOD }, fingerprint: 'abc' }, false, '__MR_SHELL_CONFIG__');
   });
 });

@@ -785,8 +785,8 @@ describe('the booted page makes no OIDC request toward a local or private server
 // --- the target kind the booted client hands connect() --------------------------------------
 //
 // connect() keeps the anonymous reconnect token on the device (localStorage) for a local or
-// private target and per tab (sessionStorage) for an official or test one, so the booted page
-// must hand it the resolved kind. The uri never says which: a local document here names a remote
+// private target in the desktop shell, and per tab (sessionStorage) in a browser and for an
+// official or test target, so the booted page must hand it the resolved kind and the host. The uri never says which: a local document here names a remote
 // wss host and an official one a loopback ws address.
 
 /** An official document on a loopback address, so the kind is not derivable from the uri. */
@@ -858,12 +858,73 @@ describe('the booted client hands connect() the resolved target kind', () => {
   });
 });
 
+/** documentFor(kind) as the desktop shell writes it: the same target with `host: 'desktop'`. */
+function desktopDocumentFor(kind: TargetKind): ShellDocument {
+  return { ...documentFor(kind), host: 'desktop' };
+}
+
+describe('the booted client tells connect() whether it runs in the desktop shell', () => {
+  for (const kind of TARGET_KINDS) {
+    it(`hands connect() desktop true for a ${kind} document with host desktop [lpw-24.7]`, async () => {
+      const opts = await bootWith(desktopDocumentFor(kind), `a desktop ${kind} document`);
+      expect(opts.desktop).toBe(true);
+    });
+  }
+
+  for (const kind of ['local', 'official'] as const) {
+    it(`hands connect() desktop false for a ${kind} document with no host [lpw-24.7]`, async () => {
+      const opts = await bootUnder(kind);
+      expect(opts.desktop).toBe(false);
+    });
+  }
+});
+
 describe('the booted page stores the anonymous reconnect token by target kind', () => {
-  it('stores the anonymous reconnect token in localStorage, and none in sessionStorage, toward a local server [lpw-2.1]', async () => {
+  for (const kind of ['local', 'private'] as const) {
+    it(`in a browser toward a ${kind} server, stores the anonymous reconnect token in sessionStorage and none in localStorage [lpw-24.6]`, async () => {
+      await prepareAnonymousWholePage();
+      try {
+        const label = `a ${kind} document in a browser, anonymous`;
+        await bootWith(documentFor(kind), label, FULL_BUILD_ENV);
+        const b0 = await sdkBuild(0);
+        expect(b0.token, `${label}: the first build has no stored token`).toBeUndefined();
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+        b0.onConnect?.(b0.conn, { toHexString: () => H.identity }, 'lpw24-anon-token');
+        expect(tokenKeysOf(sessionStorage), `${label}: the token entry per tab`).toEqual([
+          DOC_TOKEN_KEY,
+        ]);
+        expect(sessionStorage.getItem(DOC_TOKEN_KEY), `${label}: the stored token`).toBe(
+          'lpw24-anon-token',
+        );
+        expect(tokenKeysOf(localStorage), `${label}: no token entry in localStorage`).toEqual([]);
+      } finally {
+        endRealConnection();
+      }
+    }, 30_000);
+
+    it(`in a browser toward a ${kind} server, removes a token left in localStorage for the target and never hands it to the build [lpw-24.6]`, async () => {
+      await prepareAnonymousWholePage();
+      try {
+        const label = `a ${kind} document in a browser, a device token left behind`;
+        localStorage.setItem(DOC_TOKEN_KEY, 'lpw24-device-token');
+        expect(localStorage.getItem(DOC_TOKEN_KEY), 'precondition: the planted token').toBe(
+          'lpw24-device-token',
+        );
+        await bootWith(documentFor(kind), label, FULL_BUILD_ENV);
+        const b0 = await sdkBuild(0);
+        expect(b0.token, `${label}: the build was handed no token`).toBeUndefined();
+        expect(localStorage.getItem(DOC_TOKEN_KEY), `${label}: the token is gone`).toBeNull();
+      } finally {
+        endRealConnection();
+      }
+    }, 30_000);
+  }
+
+  it('from the desktop shell toward a local server, stores the anonymous reconnect token in localStorage and none in sessionStorage [lpw-24.7]', async () => {
     await prepareAnonymousWholePage();
     try {
-      const label = 'a local document, anonymous';
-      await bootWith(documentFor('local'), label, FULL_BUILD_ENV);
+      const label = 'a local document in the desktop shell, anonymous';
+      await bootWith(desktopDocumentFor('local'), label, FULL_BUILD_ENV);
       const b0 = await sdkBuild(0);
       expect(b0.token, `${label}: the first build has no stored token`).toBeUndefined();
       // The boot is done: anything the connection schedules from here runs on a fake clock.
@@ -876,6 +937,28 @@ describe('the booted page stores the anonymous reconnect token by target kind', 
         'lpw2-anon-token',
       );
       expect(tokenKeysOf(sessionStorage), `${label}: no token entry per tab`).toEqual([]);
+    } finally {
+      endRealConnection();
+    }
+  }, 30_000);
+
+  it('from the desktop shell toward a local server, resumes the token kept in localStorage with no request [lpw-24.7]', async () => {
+    await prepareAnonymousWholePage();
+    const fetchSpy = vi.fn((_url: unknown, _init?: unknown) =>
+      Promise.resolve({ ok: false, status: 503, json: () => Promise.resolve({}) }),
+    );
+    vi.stubGlobal('fetch', fetchSpy);
+    vi.stubEnv('VITE_MR_WORLD_TICKET_ISSUER', 'https://auth.example.test');
+    try {
+      const label = 'a local document in the desktop shell, a kept device token';
+      localStorage.setItem(DOC_TOKEN_KEY, 'lpw24-device-token');
+      await bootWith(desktopDocumentFor('local'), label, FULL_BUILD_ENV);
+      const b0 = await sdkBuild(0);
+      expect(b0.token, `${label}: the build resumes the kept token`).toBe('lpw24-device-token');
+      expect(localStorage.getItem(DOC_TOKEN_KEY), `${label}: the token is kept`).toBe(
+        'lpw24-device-token',
+      );
+      expect(fetchSpy.mock.calls, `${label}: no request`).toEqual([]);
     } finally {
       endRealConnection();
     }

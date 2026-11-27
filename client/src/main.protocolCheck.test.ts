@@ -238,6 +238,18 @@ const OLDER_FR = `Ce serveur utilise une version plus ancienne de Monster Realm.
 /** The bug-bundle blocked hint (download-blocked), as main.ts reports it. */
 const BUG_BUNDLE_BLOCKED_EN = 'bug bundle: download blocked — copy from console';
 const GATE_QUERY = 'SELECT * FROM module_info';
+/** The two world views a `local` or `private` connection's base set holds. */
+const WORLD_VIEW_QUERIES = ['SELECT * FROM my_world_account', 'SELECT * FROM my_world_move'];
+
+/** The base set holds each world view's query exactly once. */
+function expectWorldViewsOnce(queries: readonly string[]): void {
+  for (const q of WORLD_VIEW_QUERIES) {
+    expect(
+      queries.filter((query) => query === q),
+      `the base set holds ${q} once`,
+    ).toHaveLength(1);
+  }
+}
 
 /** A friends-server target: sign-in off, so no OIDC client and no request. */
 const DOC: ShellDocument = {
@@ -532,7 +544,9 @@ describe('the booted client refuses a server it cannot speak to (lpw-4)', () => 
     answer(b, [{ id: 0, protocol: 2, minClientProtocol: 2 }]);
     const base = otherSubs(b)[0];
     expect(Array.isArray(base?.query), 'the base set opened after the gate').toBe(true);
-    expect(base?.query as readonly string[], 'its 30 queries').toHaveLength(30);
+    const queries = base?.query as readonly string[];
+    expect(queries, 'its 32 queries').toHaveLength(32);
+    expectWorldViewsOnce(queries);
     base?.onApplied?.({});
     frames(1_000);
     expect(
@@ -552,7 +566,9 @@ describe('the booted client refuses a server it cannot speak to (lpw-4)', () => 
     open(b);
     answer(b, [{ id: 0, protocol: 4, minClientProtocol: 3 }]);
     const base = otherSubs(b)[0];
-    expect(base?.query as readonly string[], 'the base set opened').toHaveLength(30);
+    const queries = base?.query as readonly string[];
+    expect(queries, 'the base set opened with its 32 queries').toHaveLength(32);
+    expectWorldViewsOnce(queries);
     base?.onApplied?.({});
     frames(1_000);
     expect(b.reducerCalls.filter((call) => call.name === 'joinGame')).toHaveLength(1);

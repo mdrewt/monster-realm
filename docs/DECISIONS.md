@@ -2069,7 +2069,12 @@ SwiftShader and llvmpipe); a player setting as the only guard.
 
 **Decision.** The client reads its server from a page global, `__MR_SHELL_CONFIG__`, that the classic
 script `/shell-config.js` sets before the module script runs. The document is
-`{ connection: { uri, db, kind } }`. One resolver (`client/src/net/connectionConfig.ts`) rejects a
+`{ connection: { uri, db, kind, fingerprint }, host }`, where `kind`, `fingerprint` and `host` are
+optional. `fingerprint` is the fingerprint of the world's certificate key (1 to 128 characters of
+`A-Z a-z 0-9 - _`, not trimmed); `host`'s only accepted value is `'desktop'`, it describes the page's
+host and asks for nothing by itself, and a world's gate serving a page to a browser never writes it.
+Both are accepted with every kind and exported by `client/src/shell/config.ts` as `WORLD_FINGERPRINT`
+and `DESKTOP_SHELL`. One resolver (`client/src/net/connectionConfig.ts`) rejects a
 present document that is wrong and never clamps it. An absent document means the development defaults in
 a development build and a throw in a production build. An omitted `kind` is `test` in development and
 `private` in production. `uri` and `db` are used exactly as written (trimmed) and key the stored
@@ -2196,8 +2201,11 @@ whether the Profile screen's Account section offers Sign In and under which name
 `VITE_MR_OIDC_CLIENT_ID` reaches `connect` under the same kind test, and `connect` gets
 `signIn: 'oidc'` only when that issuer is non-empty, `'off'` otherwise. With `'off'` it builds no
 OIDC client, so every connection is anonymous, `startSignIn` only reports `'sign-in-off'`, and no
-OIDC request leaves the page whatever its URL or storage holds. A production document that omits `kind` resolves to `private`,
-so it gets neither. The OTLP endpoint stays a build value; the
+OIDC request leaves `connect` whatever its URL or storage holds. Toward `local` and `private` the one
+sign-in a browser page can make is for a world's ticket, only when the build sets
+`VITE_MR_WORLD_TICKET_ISSUER`, through an OIDC client `main.ts` builds apart from `connect`; its token
+goes to the account service's ticket route alone. A production document that omits `kind` resolves to
+`private`, so it gets neither account sign-in nor telemetry. The OTLP endpoint stays a build value; the
 run-time decision is only whether to use it. Two tests hold both gates:
 `client/src/observability/config.test.ts` (every kind but `official` and `test` resolves disabled)
 and `client/src/main.targetKindGate.test.ts` (boots `main.ts` under each kind, and reads the Sign In
@@ -2236,33 +2244,37 @@ client at all). Client logic that assumes a provider, or a provider label derive
 issuer URL (the OIDC flow already refuses an issuer it cannot use). A per-world telemetry opt-in or
 per-world sign-in changes these two gates and their tests, not a side path.
 
-## A single-player or friends world keeps its anonymous reconnect token on the device; a server we operate keeps it per tab
+## The desktop shell keeps a single-player or friends world's reconnect token on the device; a browser keeps every target's per tab
 
-**Decision.** `tokenPersistenceFor(kind)` (`client/src/net/authToken.ts`) is an exhaustive `switch`
-over the target's kind: `local` and `private` keep the anonymous reconnect token on the device (the
-origin's `localStorage`), `official` and `test` keep it per tab (`sessionStorage`); a run-time value
-outside the type is per tab. `createAuthTokenGate` takes that choice and uses exactly one area, never
-the other: a blocked area means an anonymous connect, not a fall back. The key is derived from the
-target's `(uri, db)` in both areas, and the rule that withholds the token after two rejections since
-the last successful connect is the same in both (the token is withheld, never deleted). Only an
-anonymous build's token is saved; the account-kind marker, the guest-claim code and the OIDC flow stay
-in per-tab `sessionStorage` for every kind. `ConnectionOptions.targetKind` is required, `connect()`
-builds its one gate from it, and `main.ts` passes `TARGET_KIND`. `client/src/net/authToken.test.ts`,
-`client/src/net/connection.runtime.test.ts`, `client/src/main.targetKindGate.test.ts` and the browser
-spec `client/e2e/local-identity.spec.ts` hold it.
+**Decision.** `tokenPersistenceFor(kind, desktop)` (`client/src/net/authToken.ts`) returns `'device'`
+(the origin's `localStorage`) only when `desktop` is true and the kind is `local` or `private`; every
+other input is `'tab'` (`sessionStorage`). `desktop` is true exactly when the shell document carries
+top-level `host: 'desktop'`, which the desktop shell writes and a browser page's document leaves out.
+So a page in a browser keeps the anonymous reconnect token per tab for every kind, and the desktop
+shell keeps a `local` or `private` world's token on the device. `createAuthTokenGate` takes that
+choice and uses exactly one area, never the other: a blocked area means an anonymous connect, not a
+fall back. For a `local` or `private` target kept per tab, `connect()` calls
+`forgetDeviceToken(globalThis, uri, db)` once before its first build: it removes that one target's
+token key from `localStorage` (a token a page left there earlier) and nothing else. The key is derived
+from the target's `(uri, db)` in both areas, and the rule that withholds the token after two
+rejections since the last successful connect is the same in both (the token is withheld, never
+deleted). Only an anonymous build's token is saved; the account-kind marker, the guest-claim code and
+the OIDC flow stay in per-tab `sessionStorage` for every kind. `ConnectionOptions.targetKind` is
+required and `desktop` defaults to a browser; `connect()` builds its one gate from the two, and
+`main.ts` passes `TARGET_KIND` and `DESKTOP_SHELL`.
+`client/src/net/authToken.test.ts`, `client/src/net/connection.runtime.test.ts`,
+`client/src/main.targetKindGate.test.ts` and the browser spec `client/e2e/local-identity.spec.ts`
+hold it.
 
-**Why.** Sign-in is off toward `local` and `private` targets, so the token is the only thing that
-identifies the player there; kept per tab, every launch would start a new character. Two pages may
-share one identity because the server removes presence rows and saves the position only when an
-identity's last connection ends. Toward a server we operate the account is the durable identity, and
-per-tab storage keeps a guest's token from outliving the tab on a shared browser profile.
+**Why.** A browser may be a shared or public computer, and a world finds the player's character again
+by their account (one character per account in a world; a check under a handle another identity holds
+moves the character), so a browser needs nothing past its session. The desktop shell's storage belongs
+to one player's device, so a relaunch resumes the same identity with no ticket request.
 
-**Rules out.** `localStorage` for every kind; falling back from one area to the other; saving an
-account token in either area. Accepted costs: a device-kept token is readable by every script in the
-page's origin for as long as it is stored, so whatever serves the page must keep foreign script out
-of that origin, and it stays in `localStorage` if a target's kind later changes; a production
-document that names no kind resolves to `private` (`kindOf` in `client/src/net/connectionConfig.ts`)
-and keeps its token on the device; and because the withhold rule is unchanged, a successful anonymous
+**Rules out.** `localStorage` for a page in a browser; falling back from one area to the other; saving
+an account token in either area; keeping a ticket or an ID token in any storage. Accepted costs: a
+device-kept token is readable by every script in the shell page's origin for as long as it is stored,
+so whatever serves the page must keep foreign script out of that origin; and a successful anonymous
 connect after two failed verifications replaces the stored token for good.
 
 ## The e2e job lists the tests that passed only on a rerun; a flake stays in `docs/e2e-flakes.md` until its fix merges
@@ -2489,6 +2501,21 @@ same at every check, and not a credential.
   gate. The deletion cascade takes the identity's handle off the host's list and erases the row
   and the identity's `world_move` row; a guest claim erases both for the guest identity it retires
   and moves none; the data export carries the caller's own row of each.
+- **The client's half.** A connection to a `local` or `private` target subscribes `my_world_account`
+  and `my_world_move` and reads its own rows at each applied snapshot, before any join
+  (`client/src/net/worldTicket.ts`, `client/src/net/connection.ts`). A move row sends nothing and the
+  page says the character is playing on another client; an own account row joins with no request to
+  the account service; with neither row and a ticket source it asks for a ticket for the world's name
+  (`worldNameFor`), calls `check_account(ticket)` on the raw connection, and joins only if the world
+  answered that the account owns the game; with no source, or a build that checks no account, it joins
+  as before. Only the page's first such snapshot runs first contact by itself; a later one waits for
+  the player (`Connection.checkIn()`), because an account gets ten tickets a minute across every world
+  and a host that drops the link could otherwise draw one per reconnect. A ticket source is one
+  interface, `TicketSource { ticket(world), signIn() }`; the one built, `createIdTokenTicketSource`,
+  is a page that signs in to the account service itself and holds the ID token in memory, and
+  `main.ts` builds it only for a `local` or `private` target outside the desktop shell when
+  `VITE_MR_WORLD_TICKET_ISSUER` is set. The gate is the menu frame's gate mode, the frame the
+  sign-in gate of a server we operate uses (`worldGateStep`, `buildWorldGateView`).
 - **Which service.** `BuildProfile::world_check_url` (see "The official build holds no attestation
   key and a world build trusts no login issuer").
 - **What keeps the surface closed.** `findDefinitionViolations`
@@ -2727,7 +2754,8 @@ and calls the attestation route, refusing every certificate error, and the shell
 the attestation and no login token. For a browser joiner the browser authenticated the server, and
 the account service derives the name from the address it sends that browser back to (see "A browser
 binds a friends server by a sign-in on the account service's own origin; the attestation names the
-address the browser is sent back to"). A world holds its own names in a private table its owner
+address the browser is sent back to"); a browser page's names for a ticket are computed by
+`worldNameFor` in `client/src/net/worldTicket.ts`. A world holds its own names in a private table its owner
 writes with `set_world_names` (at most 16, each 1 to 512 visible ASCII characters; a world with no
 name accepts no binding), and `bind_world_account` accepts an attestation only when its `aud`
 equals one of them, byte for byte. A `dns:` or an `ip:` name is listed only while the server holds

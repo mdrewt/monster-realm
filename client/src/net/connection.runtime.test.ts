@@ -25,6 +25,7 @@ import { oidcFlowStorageKey } from './oidc';
 import { AuthoritativeStore } from './store';
 import { OWNER_VIEWS, type OwnerView } from './viewReconcile';
 import { APPLY_TIMEOUT_MS, LINGER_MS } from './worldScope';
+import type { TicketOutcome, TicketSource, WorldGateEvent } from './worldTicket';
 
 type Cb = (...args: unknown[]) => void;
 /** One `subscriptionBuilder().subscribe(...)` call on the connection handed to onConnect. */
@@ -46,6 +47,12 @@ interface BuildRec {
   readonly joinGame: ReturnType<typeof vi.fn>;
   readonly completeGuestClaim: ReturnType<typeof vi.fn>;
   readonly startGuestClaim: ReturnType<typeof vi.fn>;
+  /** `procedures.checkAccount` of this build, the same function on the built connection and on
+   *  the one handed to onConnect (default: resolves `{ ok: true }`). */
+  readonly checkAccount: ReturnType<typeof vi.fn>;
+  /** Every `onInsert` handler registered on this build's `my_world_move` view, from either
+   *  connection object and under either accessor spelling. */
+  readonly moveInserts: Cb[];
   /** Every subscribe call, in order: the base set first. The protocol gate is not among them. */
   readonly subs: SubRec[];
   readonly disconnect: ReturnType<typeof vi.fn>;
@@ -134,8 +141,15 @@ vi.mock('../module_bindings', () => {
     ['onUpdate', 'update'],
     ['onDelete', 'delete'],
   ]);
-  const tableFor = (name: string, rec: BuildRec) =>
-    new Proxy(
+  const tableFor = (accessor: string, rec: BuildRec) => {
+    // The two world views answer under either accessor spelling the bindings export.
+    const name =
+      accessor === 'my_world_account'
+        ? 'myWorldAccount'
+        : accessor === 'my_world_move'
+          ? 'myWorldMove'
+          : accessor;
+    return new Proxy(
       {},
       {
         get: (_t, k) => {
@@ -146,6 +160,7 @@ vi.mock('../module_bindings', () => {
             };
           }
           return (cb: Cb) => {
+            if (name === 'myWorldMove' && k === 'onInsert') rec.moveInserts.push(cb);
             if (k === 'onInsert' || k === 'onDelete') {
               H.rowCbs[name] = [...(H.rowCbs[name] ?? []), cb];
             }
@@ -162,6 +177,7 @@ vi.mock('../module_bindings', () => {
         },
       },
     );
+  };
   return {
     DbConnection: {
       builder: () => {
@@ -202,6 +218,8 @@ vi.mock('../module_bindings', () => {
           joinGame: vi.fn(() => Promise.resolve()),
           completeGuestClaim: vi.fn(() => Promise.resolve()),
           startGuestClaim: vi.fn(() => (H.startGuestClaimImpl ?? (() => Promise.resolve()))()),
+          checkAccount: vi.fn(() => Promise.resolve({ ok: true })),
+          moveInserts: [],
           subs: [],
           disconnect: vi.fn(),
           gate: [],
@@ -232,6 +250,7 @@ vi.mock('../module_bindings', () => {
             completeGuestClaim: rec.completeGuestClaim,
             startGuestClaim: rec.startGuestClaim,
           },
+          procedures: { checkAccount: rec.checkAccount },
           subscriptionBuilder: () => sub,
         };
         const b = {
@@ -3268,6 +3287,20 @@ function conn0(rec: BuildRec) {
     };
     return builder;
   };
+  // A world view of the build's own cache: its rows, and its insert handlers for `my_world_move`.
+  const worldView = (name: 'myWorldAccount' | 'myWorldMove') => ({
+    iter: () => (rec.viewRows?.[name] ?? H.viewRows[name] ?? [])[Symbol.iterator](),
+    onInsert: (cb: Cb) => {
+      if (name === 'myWorldMove') rec.moveInserts.push(cb);
+    },
+    onUpdate: () => undefined,
+    onDelete: () => undefined,
+    removeOnInsert: () => undefined,
+    removeOnUpdate: () => undefined,
+    removeOnDelete: () => undefined,
+  });
+  const worldAccount = worldView('myWorldAccount');
+  const worldMove = worldView('myWorldMove');
   return {
     subscriptionBuilder,
     disconnect: rec.disconnect,
@@ -3278,12 +3311,17 @@ function conn0(rec: BuildRec) {
       my_account: {
         iter: () => (rec.viewRows?.my_account ?? H.viewRows.my_account ?? [])[Symbol.iterator](),
       },
+      myWorldAccount: worldAccount,
+      my_world_account: worldAccount,
+      myWorldMove: worldMove,
+      my_world_move: worldMove,
     },
     reducers: {
       joinGame: rec.joinGame,
       completeGuestClaim: rec.completeGuestClaim,
       startGuestClaim: rec.startGuestClaim,
     },
+    procedures: { checkAccount: rec.checkAccount },
   };
 }
 
@@ -3717,10 +3755,11 @@ describe('connect() with sign-in off', { sequential: true }, () => {
 });
 
 // =============================================================================================
-// The reconnect token's storage area, by target kind. A local or private target keeps the
-// anonymous reconnect token in the origin's localStorage (a reopened page resumes the player, a
-// second page shares the identity); an official or test target keeps it in per-tab sessionStorage.
-// The account-kind marker stays in sessionStorage for every kind.
+// The reconnect token's storage area, by target kind. In the desktop shell (`desktop: true`) a
+// local or private target keeps the anonymous reconnect token in the origin's localStorage (a
+// relaunch resumes the player); an official or test target keeps it in per-tab sessionStorage.
+// The account-kind marker stays in sessionStorage for every kind. The browser cases of local and
+// private targets are in the world account gate block at the end of this file.
 //
 // Every case drives the REAL connect() with `targetKind` set; the storages are happy-dom's real
 // sessionStorage and localStorage, reached through `globalThis`. Every case keeps sign-in in the
@@ -3813,15 +3852,15 @@ describe('connect(): the reconnect token storage area follows the target kind', 
     window.history.replaceState(null, '', '/');
   });
 
-  // --- local and private: localStorage --------------------------------------------------------
+  // --- local and private in the desktop shell: localStorage ------------------------------------
 
   for (const kind of ['local', 'private'] as const) {
-    it(`keeps the anonymous reconnect token in localStorage alone toward a ${kind} target, and hands it to the rebuild after a drop [lpw-2.1]`, async () => {
+    it(`keeps the anonymous reconnect token in localStorage alone toward a ${kind} target in the desktop shell, and hands it to the rebuild after a drop [lpw-2.1]`, async () => {
       // WRONG IMPL KILLED: the gate still built per tab (the token lands in sessionStorage and
       // localStorage stays empty); a write to both areas (sessionStorage holds the token too); a
       // write to localStorage with a read from sessionStorage (the rebuild gets no token).
       // This healthy run is also the positive control for the degraded-storage cases below.
-      const opts = kindOpts(kind);
+      const opts = kindOpts(kind, { desktop: true });
       connect(opts);
       await settle();
       expect(handedTokens(), 'the first build has no stored token').toEqual([undefined]);
@@ -3843,11 +3882,11 @@ describe('connect(): the reconnect token storage area follows the target kind', 
       ]);
     });
 
-    it(`hands the first build the token another page or an earlier launch left in localStorage toward a ${kind} target [lpw-2.1]`, async () => {
+    it(`hands the first build the token an earlier launch left in localStorage toward a ${kind} target in the desktop shell [lpw-2.1]`, async () => {
       localStorage.setItem(TOKEN_KEY, 'prior-tok');
       // A different token in this tab's sessionStorage under the same key: never preferred.
       sessionStorage.setItem(TOKEN_KEY, 'session-tok');
-      connect(kindOpts(kind));
+      connect(kindOpts(kind, { desktop: true }));
       await settle();
       expect(handedTokens(), 'the first build carries the localStorage token').toEqual([
         'prior-tok',
@@ -3855,10 +3894,10 @@ describe('connect(): the reconnect token storage area follows the target kind', 
     });
   }
 
-  it('keeps the reconnect token in localStorage toward a local target on a non-loopback wss uri [lpw-2.1]', async () => {
+  it('keeps the reconnect token in localStorage toward a local target in the desktop shell on a non-loopback wss uri [lpw-2.1]', async () => {
     // The kind decides, never the uri's shape.
     const key = tokenKey(REMOTE_WSS_URI, DB);
-    connect(kindOpts('local', { uri: REMOTE_WSS_URI }));
+    connect(kindOpts('local', { uri: REMOTE_WSS_URI, desktop: true }));
     await settle();
     expect(handedTokens()).toEqual([undefined]);
     const b0 = H.builds[0];
@@ -3936,11 +3975,11 @@ describe('connect(): the reconnect token storage area follows the target kind', 
   // The positive control for both cases is the healthy local run above: the same options store
   // and re-supply the token through localStorage.
 
-  it('connects anonymously and joins toward a local target when reading localStorage throws, without using the token in sessionStorage [lpw-2.3]', async () => {
+  it('connects anonymously and joins toward a local target in the desktop shell when reading localStorage throws, without using the token in sessionStorage [lpw-2.3]', async () => {
     sessionStorage.setItem(TOKEN_KEY, 'session-tok');
     const blocked = throwOnLocalStorageAccess();
     try {
-      const opts = kindOpts('local');
+      const opts = kindOpts('local', { desktop: true });
       expect(() => connect(opts)).not.toThrow();
       await settle();
       expect(handedTokens(), 'anonymous, and not the per-tab token').toEqual([undefined]);
@@ -3958,7 +3997,7 @@ describe('connect(): the reconnect token storage area follows the target kind', 
     );
   });
 
-  it('connects anonymously and joins toward a local target when writing localStorage throws, without using the token in sessionStorage [lpw-2.3]', async () => {
+  it('connects anonymously and joins toward a local target in the desktop shell when writing localStorage throws, without using the token in sessionStorage [lpw-2.3]', async () => {
     sessionStorage.setItem(TOKEN_KEY, 'session-tok');
     // Spied on the localStorage object itself, not on Storage.prototype (which sessionStorage
     // shares), so only localStorage writes throw.
@@ -3966,7 +4005,7 @@ describe('connect(): the reconnect token storage area follows the target kind', 
       throw new DOMException('The quota has been exceeded.', 'QuotaExceededError');
     });
     try {
-      const opts = kindOpts('local');
+      const opts = kindOpts('local', { desktop: true });
       expect(() => connect(opts)).not.toThrow();
       await settle();
       expect(handedTokens(), 'anonymous, and not the per-tab token').toEqual([undefined]);
@@ -3998,7 +4037,7 @@ describe('connect(): the reconnect token storage area follows the target kind', 
     { kind: 'private', area: 'device' },
     { kind: 'official', area: 'tab' },
     { kind: 'test', area: 'tab' },
-  ] as const)('writes nothing to localStorage for an account build toward a $kind target [lpw-2.4]', async ({
+  ] as const)('writes nothing to localStorage for an account build toward a $kind target in the desktop shell [lpw-2.4]', async ({
     kind,
     area,
   }) => {
@@ -4019,7 +4058,7 @@ describe('connect(): the reconnect token storage area follows the target kind', 
     );
     const setItem = vi.spyOn(localStorage, 'setItem');
     try {
-      connect(kindOpts(kind, { signIn: 'oidc' }));
+      connect(kindOpts(kind, { signIn: 'oidc', desktop: true }));
       await settle();
       expect(H.renewCalls, 'the account session renewed').toBe(1);
       expect(handedTokens(), 'the build carries the account JWT').toEqual(['acct-jwt']);
@@ -4041,12 +4080,12 @@ describe('connect(): the reconnect token storage area follows the target kind', 
     }
   });
 
-  it('does write localStorage for an anonymous build toward a local target with the same sign-in mode [lpw-2.4]', async () => {
+  it('does write localStorage for an anonymous build toward a local target in the desktop shell with the same sign-in mode [lpw-2.4]', async () => {
     // The positive half of the case above: the same target and sign-in mode, no account marker,
     // so the build is anonymous and its token does reach localStorage.
     const setItem = vi.spyOn(localStorage, 'setItem');
     try {
-      connect(kindOpts('local', { signIn: 'oidc' }));
+      connect(kindOpts('local', { signIn: 'oidc', desktop: true }));
       await settle();
       expect(H.renewCalls, 'no renewal without the marker').toBe(0);
       expect(handedTokens()).toEqual([undefined]);
@@ -4061,10 +4100,10 @@ describe('connect(): the reconnect token storage area follows the target kind', 
 
   // --- rejection suppression ------------------------------------------------------------------
 
-  it('withholds a localStorage token rejected twice since the last success toward a local target, keeps it stored, and replaces it on the next success [lpw-2.8]', async () => {
+  it('withholds a localStorage token rejected twice since the last success toward a local target in the desktop shell, keeps it stored, and replaces it on the next success [lpw-2.8]', async () => {
     localStorage.setItem(TOKEN_KEY, 'stale-tok');
     const rejected = () => new Error('Failed to verify token: Unauthorized');
-    connect(kindOpts('local'));
+    connect(kindOpts('local', { desktop: true }));
     await settle();
     expect(handedTokens(), 'build 1 carries the stored token').toEqual(['stale-tok']);
     H.builds[0].onConnectError?.({}, rejected());
@@ -4085,9 +4124,9 @@ describe('connect(): the reconnect token storage area follows the target kind', 
     });
   });
 
-  it('never withholds a localStorage token toward a local target for failures that are not credential rejections [lpw-2.8]', async () => {
+  it('never withholds a localStorage token toward a local target in the desktop shell for failures that are not credential rejections [lpw-2.8]', async () => {
     localStorage.setItem(TOKEN_KEY, 'stale-tok');
-    connect(kindOpts('local'));
+    connect(kindOpts('local', { desktop: true }));
     await settle();
     H.builds[0].onConnectError?.({}, new Error('network down'));
     await nextAttempt();
@@ -5040,4 +5079,798 @@ describe('connect(): the guest claim completes on the own my_account row', {
     expect(opts.onClaimResult).toHaveBeenCalledTimes(1);
     expect(opts.onClaimResult).toHaveBeenCalledWith({ ok: false, message: 'code unknown' });
   });
+});
+
+// =============================================================================================
+// The world account gate. Toward a local or private target the base set also holds the two world
+// views, and each applied snapshot reads the own rows of them from the build's cache: a move row
+// reports `moved`, an account row joins, and neither runs the first contact (a ticket from the
+// injected source, then `check_account` on the connection, then the join). The ticket source is
+// a hand-written fake; a procedure answer the order matters for is a promise the test settles.
+// =============================================================================================
+
+/** A ticket as the account service issues it: 43 characters of A-Z, a-z, 0-9, "-" and "_". */
+const WG_TICKET = 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U-_';
+/** The world name the connection is given, and must hand the source. */
+const WG_WORLD = 'spki:fp-1/mr-test';
+/** An identity that is not this connection's. */
+const WG_OTHER_ID = { toHexString: () => 'ab'.repeat(32) };
+
+interface WgSource {
+  readonly ticket: Mock<(world: string) => Promise<TicketOutcome>>;
+  readonly signIn: Mock<() => Promise<boolean>>;
+}
+
+function wgDeferred<T>(): { readonly promise: Promise<T>; resolve(value: T): void } {
+  let settleWith: (value: T) => void = () => undefined;
+  const promise = new Promise<T>((r) => {
+    settleWith = r;
+  });
+  return { promise, resolve: (value) => settleWith(value) };
+}
+
+/** Enough microtask turns for a ticket, a procedure answer and the join after it. */
+async function wgFlush(): Promise<void> {
+  for (let i = 0; i < 10; i += 1) await settle();
+}
+
+/** connect() options toward a `kind` target with a world source, sign-in off (as the page runs
+ *  local and private targets), and recording callbacks. `order` lists the source's calls
+ *  (`ticket`, `signIn`) and each gate event (`gate:<kind>`) as they happen. */
+function wgOpts(kind: unknown, overrides: Record<string, unknown> = {}) {
+  const order: string[] = [];
+  const events: WorldGateEvent[] = [];
+  const tickets: WgSource = {
+    ticket: vi.fn((_world: string): Promise<TicketOutcome> => {
+      order.push('ticket');
+      return Promise.resolve({ kind: 'ticket', ticket: WG_TICKET });
+    }),
+    signIn: vi.fn((): Promise<boolean> => {
+      order.push('signIn');
+      return Promise.resolve(true);
+    }),
+  };
+  const source: TicketSource = tickets;
+  const opts = kindOpts(kind, {
+    signIn: 'off',
+    world: { name: WG_WORLD, tickets: source },
+    onWorldGate: vi.fn((event: WorldGateEvent) => {
+      order.push(`gate:${event.kind}`);
+      events.push(event);
+    }),
+    onOwnershipRefused: vi.fn(),
+    ...overrides,
+  });
+  return { opts, tickets, events, order };
+}
+
+/** An own (or `identity`'s) `my_world_account` row. */
+const wgAccount = (identity: unknown = ID) => ({
+  handle: 'tester',
+  identity,
+  entitled: true,
+  checkedAtMs: 0n,
+  isHost: false,
+});
+/** An own (or `identity`'s) `my_world_move` row. */
+const wgMove = (movedAtMs: bigint, identity: unknown = ID) => ({ identity, movedAtMs });
+
+interface WgRows {
+  readonly account?: unknown[];
+  readonly move?: unknown[];
+}
+
+/** Put `rows` in build `b`'s cache, then open it: onConnect and the base set's applied snapshot. */
+function wgOpen(b: BuildRec, rows: WgRows = {}, token = 'anon-tok'): void {
+  b.viewRows = { ...b.viewRows, myWorldAccount: rows.account ?? [], myWorldMove: rows.move ?? [] };
+  b.onConnect?.(conn0(b), ID, token);
+  b.onApplied?.();
+}
+
+/** connect(), then build 0 opened over `rows` (`prime` scripts it first), then flush. */
+async function wgBoot(
+  opts: ConnectionOptions,
+  rows: WgRows = {},
+  prime?: (b: BuildRec) => void,
+  token = 'anon-tok',
+): Promise<{ handle: ReturnType<typeof connect>; b: BuildRec }> {
+  const handle = connect(opts);
+  await settle();
+  const b = H.builds[0];
+  if (b === undefined) throw new Error('connect() built nothing');
+  prime?.(b);
+  wgOpen(b, rows, token);
+  await wgFlush();
+  return { handle, b };
+}
+
+/** Drop build `from`, let the rebuild fire, open it over `rows` (`prime` first), then flush. */
+async function wgReconnect(
+  from: number,
+  rows: WgRows = {},
+  prime?: (b: BuildRec) => void,
+): Promise<BuildRec> {
+  H.builds[from]?.onDisconnect?.();
+  await nextAttempt();
+  const b = H.builds[from + 1];
+  if (b === undefined) throw new Error(`build ${from} was not rebuilt`);
+  prime?.(b);
+  wgOpen(b, rows);
+  await wgFlush();
+  return b;
+}
+
+/** Hand every `my_world_move` insert handler of `b` the row, as the SDK would. */
+function wgFireMove(b: BuildRec, row: unknown): void {
+  if (b.moveInserts.length === 0) throw new Error('no my_world_move insert handler was registered');
+  for (const cb of [...b.moveInserts]) cb({}, row);
+}
+
+/** Every onError('join', …) report. */
+const wgJoinErrors = (opts: ConnectionOptions): unknown[][] =>
+  (opts.onError as unknown as Mock).mock.calls.filter(([where]) => where === 'join');
+
+const wgRejectOwnership = (b: BuildRec): void => {
+  b.joinGame.mockImplementation(() => Promise.reject(new Error('ownership required')));
+};
+
+describe('connect(): the world account gate', { sequential: true }, () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    H.builds = [];
+    H.renew = null;
+    H.renewCalls = 0;
+    H.startGuestClaimImpl = null;
+    H.viewRows = {};
+    H.rowCbs = {};
+    H.rowEvents = {};
+    H.builderThrows = false;
+    H.beginSignIn = vi.fn(() => Promise.resolve({ kind: 'transient-error' }));
+    H.oidcClients = 0;
+    H.realOidc = false;
+    sessionStorage.clear();
+    localStorage.clear();
+    window.history.replaceState(null, '', '/');
+  });
+  afterEach(() => {
+    window.dispatchEvent(new Event('pagehide')); // tear the connection down: no stray rebuilds
+    vi.useRealTimers();
+    sessionStorage.clear();
+    localStorage.clear();
+  });
+
+  // --- the base batch -------------------------------------------------------------------------
+
+  for (const kind of ['local', 'private'] as const) {
+    it(`the base batch toward a ${kind} target holds my_world_account and my_world_move once each, 32 queries in all [lpw-24.2]`, async () => {
+      const { opts } = wgOpts(kind);
+      const { b } = await wgBoot(opts, { account: [wgAccount()] });
+      const queries = b.queries ?? [];
+      expect(queries.filter((q) => q === 'SELECT * FROM my_world_account')).toHaveLength(1);
+      expect(queries.filter((q) => q === 'SELECT * FROM my_world_move')).toHaveLength(1);
+      expect(queries).toHaveLength(32);
+    });
+  }
+
+  for (const kind of ['official', 'test'] as const) {
+    it(`the base batch toward a ${kind} target holds neither world view, 30 queries in all [lpw-24.8]`, async () => {
+      const { opts } = wgOpts(kind);
+      const { b } = await wgBoot(opts);
+      const queries = b.queries ?? [];
+      expect(queries.filter((q) => q.includes('my_world_'))).toEqual([]);
+      expect(queries).toHaveLength(30);
+    });
+  }
+
+  // --- first contact --------------------------------------------------------------------------
+
+  it('an unknown identity asks the source for a ticket for the world, calls check_account with it once the ticket resolved, and joins only after the procedure answered ok, reporting entitled first [lpw-24.1]', async () => {
+    const { opts, tickets, events, order } = wgOpts('local');
+    const ticket = wgDeferred<TicketOutcome>();
+    tickets.ticket.mockImplementation(() => {
+      order.push('ticket');
+      return ticket.promise;
+    });
+    const answer = wgDeferred<unknown>();
+    const { b } = await wgBoot(opts, {}, (b0) => {
+      b0.checkAccount.mockImplementation(() => {
+        order.push('check');
+        return answer.promise;
+      });
+      b0.joinGame.mockImplementation(() => {
+        order.push('join');
+        return Promise.resolve();
+      });
+    });
+    expect(tickets.ticket.mock.calls, 'one ticket, for the world name').toEqual([[WG_WORLD]]);
+    expect(b.checkAccount, 'no procedure before the ticket').not.toHaveBeenCalled();
+    expect(b.joinGame, 'no join before the ticket').not.toHaveBeenCalled();
+
+    ticket.resolve({ kind: 'ticket', ticket: WG_TICKET });
+    await wgFlush();
+    expect(b.checkAccount.mock.calls, 'the procedure, with the ticket').toEqual([
+      [{ ticket: WG_TICKET }],
+    ]);
+    expect(b.joinGame, 'no join while the procedure is pending').toHaveBeenCalledTimes(0);
+    expect(events, 'no event while the procedure is pending').toEqual([]);
+
+    answer.resolve({ ok: true });
+    await wgFlush();
+    expect(events).toEqual([{ kind: 'entitled' }]);
+    expect(b.joinGame.mock.calls).toEqual([[{ name: 'Tester' }]]);
+    expect(order).toEqual(['ticket', 'check', 'gate:entitled', 'join']);
+    expect(tickets.signIn, 'the automatic path never signs in').not.toHaveBeenCalled();
+  });
+
+  it('with the dev send logger set, the first contact logs the join and no logged send carries the ticket [lpw-24.1]', async () => {
+    const onSend = vi.fn();
+    const { opts } = wgOpts('local', { onSend });
+    const { b } = await wgBoot(opts);
+    expect(b.checkAccount.mock.calls).toEqual([[{ ticket: WG_TICKET }]]);
+    expect(b.joinGame).toHaveBeenCalledTimes(1);
+    expect(
+      onSend.mock.calls.map(([reducer]) => reducer),
+      'liveness: the sink logs the join',
+    ).toContain('joinGame');
+    expect(JSON.stringify(onSend.mock.calls)).not.toContain(WG_TICKET);
+  });
+
+  it('the first contact writes the ticket to neither storage area [lpw-24.6]', async () => {
+    const { opts } = wgOpts('local');
+    const { b } = await wgBoot(opts);
+    expect(b.checkAccount, 'precondition: the ticket was used').toHaveBeenCalledTimes(1);
+    const everything = [
+      ...Object.entries(entriesOf(sessionStorage)),
+      ...Object.entries(entriesOf(localStorage)),
+    ];
+    expect(
+      everything.filter(([k, v]) => k.includes(WG_TICKET) || (v ?? '').includes(WG_TICKET)),
+    ).toEqual([]);
+  });
+
+  // --- a known identity -----------------------------------------------------------------------
+
+  it('a known identity (an own my_world_account row) joins at the applied snapshot and asks the source nothing [lpw-24.2]', async () => {
+    const { opts, tickets } = wgOpts('local');
+    const { b } = await wgBoot(opts, { account: [wgAccount()] });
+    expect(b.joinGame.mock.calls).toEqual([[{ name: 'Tester' }]]);
+    expect(tickets.ticket).not.toHaveBeenCalled();
+    expect(tickets.signIn).not.toHaveBeenCalled();
+    expect(b.checkAccount).not.toHaveBeenCalled();
+    expect(opts.onWorldGate).not.toHaveBeenCalled();
+  });
+
+  it('a my_world_account row of another identity counts as unknown: the first contact runs [lpw-24.2]', async () => {
+    const { opts, tickets } = wgOpts('private');
+    const answer = wgDeferred<unknown>();
+    const { b } = await wgBoot(opts, { account: [wgAccount(WG_OTHER_ID)] }, (b0) => {
+      b0.checkAccount.mockImplementation(() => answer.promise);
+    });
+    expect(tickets.ticket.mock.calls).toEqual([[WG_WORLD]]);
+    expect(b.checkAccount.mock.calls).toEqual([[{ ticket: WG_TICKET }]]);
+    expect(b.joinGame, 'no join before the answer').not.toHaveBeenCalled();
+  });
+
+  // --- first-contact outcomes that do not join ------------------------------------------------
+
+  it('a source that cannot reach the account service reports unreachable, calls no procedure and does not join [lpw-24.3]', async () => {
+    const { opts, tickets, events } = wgOpts('local');
+    tickets.ticket.mockResolvedValue({ kind: 'unreachable' });
+    const { b } = await wgBoot(opts);
+    expect(events).toEqual([{ kind: 'unreachable' }]);
+    expect(b.checkAccount).not.toHaveBeenCalled();
+    expect(b.joinGame).not.toHaveBeenCalled();
+  });
+
+  it('check_account answering "the account service gave no answer" reports unreachable and does not join [lpw-24.3]', async () => {
+    const { opts, events } = wgOpts('local');
+    const { b } = await wgBoot(opts, {}, (b0) => {
+      b0.checkAccount.mockResolvedValue({ err: 'the account service gave no answer' });
+    });
+    expect(b.checkAccount).toHaveBeenCalledTimes(1);
+    expect(events).toEqual([{ kind: 'unreachable' }]);
+    expect(b.joinGame).not.toHaveBeenCalled();
+  });
+
+  it('check_account answering ok: false reports not-entitled and does not join [lpw-24.4]', async () => {
+    const { opts, events } = wgOpts('local');
+    const { b } = await wgBoot(opts, {}, (b0) => {
+      b0.checkAccount.mockResolvedValue({ ok: false });
+    });
+    expect(events).toEqual([{ kind: 'not-entitled' }]);
+    expect(b.joinGame).not.toHaveBeenCalled();
+  });
+
+  it('check_account answering another error reports refused with its text and does not join [lpw-24.3]', async () => {
+    const reason = 'too many account checks this minute; try again shortly';
+    const { opts, events } = wgOpts('local');
+    const { b } = await wgBoot(opts, {}, (b0) => {
+      b0.checkAccount.mockResolvedValue({ err: reason });
+    });
+    expect(events).toEqual([{ kind: 'refused', reason }]);
+    expect(b.joinGame).not.toHaveBeenCalled();
+  });
+
+  it('a source that needs a sign-in reports sign-in-needed, does not start the sign-in on the automatic path, calls no procedure and does not join [lpw-24.1]', async () => {
+    const { opts, tickets, events } = wgOpts('local');
+    tickets.ticket.mockResolvedValue({ kind: 'sign-in-needed' });
+    const { b } = await wgBoot(opts);
+    expect(events).toEqual([{ kind: 'sign-in-needed' }]);
+    expect(tickets.signIn).not.toHaveBeenCalled();
+    expect(b.checkAccount).not.toHaveBeenCalled();
+    expect(b.joinGame).not.toHaveBeenCalled();
+  });
+
+  it('check_account answering "this server checks no account" joins and reports nothing [lpw-24.2]', async () => {
+    const { opts } = wgOpts('local');
+    const { b } = await wgBoot(opts, {}, (b0) => {
+      b0.checkAccount.mockResolvedValue({ err: 'this server checks no account' });
+    });
+    expect(b.checkAccount).toHaveBeenCalledTimes(1);
+    expect(b.joinGame.mock.calls).toEqual([[{ name: 'Tester' }]]);
+    expect(opts.onWorldGate).not.toHaveBeenCalled();
+  });
+
+  // --- a join refused for ownership -----------------------------------------------------------
+
+  it('a join refused with "ownership required" for a known identity with a world source reports not-entitled, never onOwnershipRefused, and the next snapshot joins again [lpw-24.4]', async () => {
+    const { opts, tickets, events } = wgOpts('local');
+    const { b } = await wgBoot(opts, { account: [wgAccount()] }, wgRejectOwnership);
+    expect(b.joinGame).toHaveBeenCalledTimes(1);
+    expect(events).toEqual([{ kind: 'not-entitled' }]);
+    expect(opts.onOwnershipRefused).not.toHaveBeenCalled();
+    expect(wgJoinErrors(opts), 'not an onError report').toEqual([]);
+    const b1 = await wgReconnect(0, { account: [wgAccount()] });
+    expect(b1.joinGame, 'nothing latched: the rebuilt snapshot joins').toHaveBeenCalledTimes(1);
+    expect(tickets.ticket).not.toHaveBeenCalled();
+  });
+
+  it('a join refused with "ownership required" for an unknown identity with no world source reports unreachable, never onOwnershipRefused [lpw-24.3]', async () => {
+    const { opts, events } = wgOpts('local', { world: undefined });
+    const { b } = await wgBoot(opts, {}, wgRejectOwnership);
+    expect(b.joinGame, 'no source: the join goes out').toHaveBeenCalledTimes(1);
+    expect(events).toEqual([{ kind: 'unreachable' }]);
+    expect(opts.onOwnershipRefused).not.toHaveBeenCalled();
+    expect(wgJoinErrors(opts)).toEqual([]);
+  });
+
+  it('a join refused with "ownership required" for a known identity with no world source goes to onOwnershipRefused and reports no gate event [lpw-24.4]', async () => {
+    const { opts } = wgOpts('local', { world: undefined });
+    await wgBoot(opts, { account: [wgAccount()] }, wgRejectOwnership);
+    expect(opts.onOwnershipRefused).toHaveBeenCalledTimes(1);
+    expect(opts.onWorldGate).not.toHaveBeenCalled();
+  });
+
+  it('a join refused with "ownership required" toward an official target with a world source goes to onOwnershipRefused and reports no gate event [lpw-24.8]', async () => {
+    const { opts, tickets } = wgOpts('official');
+    await wgBoot(opts, {}, wgRejectOwnership);
+    expect(opts.onOwnershipRefused).toHaveBeenCalledTimes(1);
+    expect(opts.onWorldGate).not.toHaveBeenCalled();
+    expect(tickets.ticket).not.toHaveBeenCalled();
+  });
+
+  it('after a join refused with "ownership required" for a known identity with no world source, the rebuilt snapshot joins again [lpw-24.4]', async () => {
+    const { opts } = wgOpts('local', { world: undefined, onAccountRequired: vi.fn() });
+    await wgBoot(opts, { account: [wgAccount()] }, wgRejectOwnership);
+    expect(opts.onOwnershipRefused, 'precondition: the refusal').toHaveBeenCalledTimes(1);
+    const b1 = await wgReconnect(0, { account: [wgAccount()] });
+    expect(b1.joinGame.mock.calls).toEqual([[{ name: 'Tester' }]]);
+    expect(opts.onAccountRequired).not.toHaveBeenCalled();
+    expect(opts.onOwnershipRefused).toHaveBeenCalledTimes(1);
+  });
+
+  it('after a join refused with "ownership required" for an unknown identity with no world source, the rebuilt snapshot joins again [lpw-24.3]', async () => {
+    const { opts, events } = wgOpts('local', { world: undefined, onAccountRequired: vi.fn() });
+    await wgBoot(opts, {}, wgRejectOwnership);
+    expect(events, 'precondition: the refusal').toEqual([{ kind: 'unreachable' }]);
+    const b1 = await wgReconnect(0);
+    expect(b1.joinGame.mock.calls).toEqual([[{ name: 'Tester' }]]);
+    expect(opts.onAccountRequired).not.toHaveBeenCalled();
+    expect(events).toEqual([{ kind: 'unreachable' }]);
+  });
+
+  it('after a join refused with "ownership required" toward an official target, the rebuilt snapshot sends no join and reports the account required [lpw-24.8]', async () => {
+    const { opts } = wgOpts('official', { onAccountRequired: vi.fn() });
+    await wgBoot(opts, {}, wgRejectOwnership);
+    expect(opts.onOwnershipRefused, 'precondition: the refusal').toHaveBeenCalledTimes(1);
+    const b1 = await wgReconnect(0);
+    expect(b1.joinGame).not.toHaveBeenCalled();
+    expect(opts.onAccountRequired).toHaveBeenCalledTimes(1);
+  });
+
+  // --- moved ----------------------------------------------------------------------------------
+
+  it('an own my_world_move row in the snapshot reports moved once with its time, even when its insert callback follows, and neither joins nor asks for a ticket [lpw-24.5]', async () => {
+    const { opts, tickets, events } = wgOpts('local');
+    const move = wgMove(1_700_000_000_000n);
+    const { b } = await wgBoot(opts, { account: [wgAccount()], move: [move] });
+    wgFireMove(b, move);
+    await wgFlush();
+    expect(events).toEqual([{ kind: 'moved', movedAtMs: 1_700_000_000_000 }]);
+    expect(b.joinGame).not.toHaveBeenCalled();
+    expect(tickets.ticket).not.toHaveBeenCalled();
+    expect(b.checkAccount).not.toHaveBeenCalled();
+  });
+
+  it('checkIn() after a move runs the first contact: a ticket, check_account, entitled, then one join [lpw-24.5]', async () => {
+    const { opts, tickets, events, order } = wgOpts('local');
+    const move = wgMove(1_700_000_000_000n);
+    const { handle, b } = await wgBoot(opts, { account: [wgAccount()], move: [move] }, (b0) => {
+      b0.joinGame.mockImplementation(() => {
+        order.push('join');
+        return Promise.resolve();
+      });
+    });
+    handle.checkIn();
+    await wgFlush();
+    expect(tickets.ticket.mock.calls).toEqual([[WG_WORLD]]);
+    expect(b.checkAccount.mock.calls).toEqual([[{ ticket: WG_TICKET }]]);
+    expect(events).toEqual([{ kind: 'moved', movedAtMs: 1_700_000_000_000 }, { kind: 'entitled' }]);
+    expect(b.joinGame.mock.calls).toEqual([[{ name: 'Tester' }]]);
+    expect(order).toEqual(['gate:moved', 'ticket', 'gate:entitled', 'join']);
+  });
+
+  it('a my_world_move row inserted for the own identity on a joined connection reports moved with that row`s time [lpw-24.5]', async () => {
+    const { opts, tickets, events } = wgOpts('local');
+    const { b } = await wgBoot(opts, { account: [wgAccount()] });
+    expect(b.joinGame, 'precondition: joined').toHaveBeenCalledTimes(1);
+    expect(events, 'precondition: no event').toEqual([]);
+    const move = wgMove(1_700_000_100_000n);
+    b.viewRows = { ...b.viewRows, myWorldMove: [move] };
+    wgFireMove(b, move);
+    await wgFlush();
+    expect(events).toEqual([{ kind: 'moved', movedAtMs: 1_700_000_100_000 }]);
+    expect(tickets.ticket).not.toHaveBeenCalled();
+  });
+
+  it('a my_world_move row of another identity, cached or inserted, reports nothing and the own join goes out [lpw-24.5]', async () => {
+    const { opts } = wgOpts('local');
+    const other = wgMove(1_700_000_000_000n, WG_OTHER_ID);
+    const { b } = await wgBoot(opts, { account: [wgAccount()], move: [other] });
+    wgFireMove(b, other);
+    await wgFlush();
+    expect(opts.onWorldGate).not.toHaveBeenCalled();
+    expect(b.joinGame).toHaveBeenCalledTimes(1);
+  });
+
+  it('an own my_world_move row inserted on a build a rebuild replaced reports nothing; the live build`s insert reports it [lpw-24.5]', async () => {
+    const { opts, events } = wgOpts('local');
+    const { b } = await wgBoot(opts, { account: [wgAccount()] });
+    const b1 = await wgReconnect(0, { account: [wgAccount()] });
+    expect(b1.joinGame, 'precondition: the rebuilt build joined').toHaveBeenCalledTimes(1);
+    const move = wgMove(1_700_000_200_000n);
+    wgFireMove(b, move);
+    await wgFlush();
+    expect(events, 'the replaced build reports nothing').toEqual([]);
+    wgFireMove(b1, move);
+    await wgFlush();
+    expect(events).toEqual([{ kind: 'moved', movedAtMs: 1_700_000_200_000 }]);
+  });
+
+  // --- once per connect(), and checkIn() ------------------------------------------------------
+
+  it('the automatic first contact runs once per connect(): after it reported unreachable, a rebuilt snapshot that still finds neither row reports unreachable again and asks nothing, until checkIn() [lpw-24.1]', async () => {
+    const { opts, tickets, events } = wgOpts('local');
+    tickets.ticket.mockResolvedValue({ kind: 'unreachable' });
+    const { handle } = await wgBoot(opts);
+    expect(events, 'precondition: the first contact ended').toEqual([{ kind: 'unreachable' }]);
+    const b1 = await wgReconnect(0);
+    expect(events).toEqual([{ kind: 'unreachable' }, { kind: 'unreachable' }]);
+    expect(tickets.ticket, 'the rebuilt snapshot asks nothing').toHaveBeenCalledTimes(1);
+    expect(b1.checkAccount).not.toHaveBeenCalled();
+    expect(b1.joinGame).not.toHaveBeenCalled();
+    handle.checkIn();
+    await wgFlush();
+    expect(tickets.ticket, 'checkIn() runs the first contact').toHaveBeenCalledTimes(2);
+  });
+
+  it('after the automatic first contact reported refused with a reason, a rebuilt snapshot that still finds neither row reports the same reason again and asks nothing, until checkIn() [lpw-24.1]', async () => {
+    const reason = 'too many account checks this minute; try again shortly';
+    const { opts, tickets, events } = wgOpts('local');
+    const { handle } = await wgBoot(opts, {}, (b0) => {
+      b0.checkAccount.mockResolvedValue({ err: reason });
+    });
+    expect(events, 'precondition: the first contact ended').toEqual([{ kind: 'refused', reason }]);
+    const b1 = await wgReconnect(0);
+    expect(events).toEqual([
+      { kind: 'refused', reason },
+      { kind: 'refused', reason },
+    ]);
+    expect(tickets.ticket, 'the rebuilt snapshot asks nothing').toHaveBeenCalledTimes(1);
+    expect(b1.checkAccount).not.toHaveBeenCalled();
+    expect(b1.joinGame).not.toHaveBeenCalled();
+    handle.checkIn();
+    await wgFlush();
+    expect(tickets.ticket, 'checkIn() runs the first contact').toHaveBeenCalledTimes(2);
+    expect(b1.checkAccount.mock.calls).toEqual([[{ ticket: WG_TICKET }]]);
+  });
+
+  it('after the automatic first contact ended entitled, a rebuilt snapshot that finds neither row reports sign-in-needed and asks nothing, until checkIn() [lpw-24.1]', async () => {
+    const { opts, tickets, events } = wgOpts('local');
+    const { handle, b } = await wgBoot(opts);
+    expect(events, 'precondition: the first contact ended').toEqual([{ kind: 'entitled' }]);
+    expect(b.joinGame, 'precondition: the entitled identity joined').toHaveBeenCalledTimes(1);
+    const b1 = await wgReconnect(0);
+    expect(events).toEqual([{ kind: 'entitled' }, { kind: 'sign-in-needed' }]);
+    expect(tickets.ticket, 'the rebuilt snapshot asks nothing').toHaveBeenCalledTimes(1);
+    expect(b1.checkAccount).not.toHaveBeenCalled();
+    expect(b1.joinGame).not.toHaveBeenCalled();
+    handle.checkIn();
+    await wgFlush();
+    expect(tickets.ticket, 'checkIn() runs the first contact').toHaveBeenCalledTimes(2);
+  });
+
+  it('after the automatic first contact reported unreachable and a checkIn() contact ended entitled, a rebuilt snapshot that finds neither row reports sign-in-needed, not unreachable, and asks nothing [lpw-24.1]', async () => {
+    const { opts, tickets, events } = wgOpts('local');
+    tickets.ticket.mockResolvedValueOnce({ kind: 'unreachable' });
+    const { handle, b } = await wgBoot(opts);
+    expect(events, 'precondition: the first contact ended').toEqual([{ kind: 'unreachable' }]);
+    handle.checkIn();
+    await wgFlush();
+    expect(events, 'precondition: the checkIn() contact ended').toEqual([
+      { kind: 'unreachable' },
+      { kind: 'entitled' },
+    ]);
+    expect(b.checkAccount.mock.calls, 'precondition: one check').toEqual([[{ ticket: WG_TICKET }]]);
+    expect(b.joinGame, 'precondition: the entitled identity joined').toHaveBeenCalledTimes(1);
+    const b1 = await wgReconnect(0);
+    expect(events.slice(2)).toEqual([{ kind: 'sign-in-needed' }]);
+    expect(tickets.ticket, 'the rebuilt snapshot asks nothing').toHaveBeenCalledTimes(2);
+    expect(b1.checkAccount).not.toHaveBeenCalled();
+    expect(b1.joinGame).not.toHaveBeenCalled();
+  });
+
+  it('checkIn() answered sign-in-needed reports the event, then starts the sign-in once [lpw-24.5]', async () => {
+    const { opts, tickets, events, order } = wgOpts('local');
+    tickets.ticket.mockResolvedValue({ kind: 'sign-in-needed' });
+    const { handle } = await wgBoot(opts);
+    expect(
+      tickets.signIn,
+      'precondition: the automatic path signed nothing in',
+    ).not.toHaveBeenCalled();
+    handle.checkIn();
+    await wgFlush();
+    expect(events).toEqual([{ kind: 'sign-in-needed' }, { kind: 'sign-in-needed' }]);
+    expect(tickets.signIn).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(['gate:sign-in-needed', 'gate:sign-in-needed', 'signIn']);
+  });
+
+  it('checkIn() answered sign-in-needed whose sign-in does not start reports sign-in-needed, then unreachable [lpw-24.3]', async () => {
+    const { opts, tickets, events, order } = wgOpts('local');
+    tickets.ticket.mockResolvedValue({ kind: 'sign-in-needed' });
+    tickets.signIn.mockImplementation(() => {
+      order.push('signIn');
+      return Promise.resolve(false);
+    });
+    const { handle } = await wgBoot(opts);
+    expect(events, 'precondition: the automatic contact').toEqual([{ kind: 'sign-in-needed' }]);
+    handle.checkIn();
+    await wgFlush();
+    expect(events).toEqual([
+      { kind: 'sign-in-needed' },
+      { kind: 'sign-in-needed' },
+      { kind: 'unreachable' },
+    ]);
+    expect(order).toEqual([
+      'gate:sign-in-needed',
+      'gate:sign-in-needed',
+      'signIn',
+      'gate:unreachable',
+    ]);
+  });
+
+  it('a checkIn() while the sign-in a checkIn() started is pending asks the source nothing; once it settled, checkIn() asks again [lpw-24.5]', async () => {
+    const { opts, tickets } = wgOpts('local');
+    tickets.ticket.mockResolvedValue({ kind: 'sign-in-needed' });
+    const signing = wgDeferred<boolean>();
+    tickets.signIn.mockImplementation(() => signing.promise);
+    const { handle } = await wgBoot(opts);
+    handle.checkIn();
+    await wgFlush();
+    expect(tickets.signIn, 'precondition: the sign-in is pending').toHaveBeenCalledTimes(1);
+    expect(tickets.ticket).toHaveBeenCalledTimes(2);
+    handle.checkIn();
+    await wgFlush();
+    expect(tickets.ticket, 'the second checkIn() asks nothing').toHaveBeenCalledTimes(2);
+    expect(tickets.signIn).toHaveBeenCalledTimes(1);
+    signing.resolve(true);
+    await wgFlush();
+    handle.checkIn();
+    await wgFlush();
+    expect(tickets.ticket, 'settled: checkIn() asks again').toHaveBeenCalledTimes(3);
+  });
+
+  it('a sign-in started by checkIn() that resolves false after the link dropped reports nothing more [lpw-24.5]', async () => {
+    const { opts, tickets, events } = wgOpts('local');
+    tickets.ticket.mockResolvedValue({ kind: 'sign-in-needed' });
+    const signing = wgDeferred<boolean>();
+    tickets.signIn.mockImplementation(() => signing.promise);
+    const { handle, b } = await wgBoot(opts);
+    handle.checkIn();
+    await wgFlush();
+    expect(events, 'precondition: both contacts reported').toEqual([
+      { kind: 'sign-in-needed' },
+      { kind: 'sign-in-needed' },
+    ]);
+    b.onDisconnect?.();
+    signing.resolve(false);
+    await wgFlush();
+    expect(events).toEqual([{ kind: 'sign-in-needed' }, { kind: 'sign-in-needed' }]);
+  });
+
+  it('a checkIn() while a checkIn() first contact is pending asks the source nothing; once it settled, checkIn() asks again [lpw-24.1]', async () => {
+    const { opts, tickets } = wgOpts('local');
+    tickets.ticket.mockResolvedValueOnce({ kind: 'unreachable' });
+    const { handle } = await wgBoot(opts);
+    expect(tickets.ticket, 'precondition: the automatic contact').toHaveBeenCalledTimes(1);
+    const pending = wgDeferred<TicketOutcome>();
+    tickets.ticket.mockImplementationOnce(() => pending.promise);
+    handle.checkIn();
+    await wgFlush();
+    expect(tickets.ticket).toHaveBeenCalledTimes(2);
+    handle.checkIn();
+    await wgFlush();
+    expect(tickets.ticket, 'the second checkIn() asks nothing').toHaveBeenCalledTimes(2);
+    pending.resolve({ kind: 'unreachable' });
+    await wgFlush();
+    handle.checkIn();
+    await wgFlush();
+    expect(tickets.ticket, 'settled: checkIn() asks again').toHaveBeenCalledTimes(3);
+  });
+
+  it('a checkIn() while the automatic first contact is pending asks the source nothing [lpw-24.1]', async () => {
+    const { opts, tickets } = wgOpts('local');
+    const pending = wgDeferred<TicketOutcome>();
+    tickets.ticket.mockImplementation(() => pending.promise);
+    const { handle } = await wgBoot(opts);
+    expect(tickets.ticket).toHaveBeenCalledTimes(1);
+    handle.checkIn();
+    await wgFlush();
+    expect(tickets.ticket).toHaveBeenCalledTimes(1);
+  });
+
+  it('checkIn() with no world source calls no procedure, reports nothing and sends no join [lpw-24.1]', async () => {
+    const { opts } = wgOpts('local', { world: undefined });
+    const { handle, b } = await wgBoot(opts);
+    expect(b.joinGame, 'precondition: no source, the join went out').toHaveBeenCalledTimes(1);
+    expect(() => handle.checkIn()).not.toThrow();
+    await wgFlush();
+    expect(b.checkAccount).not.toHaveBeenCalled();
+    expect(opts.onWorldGate).not.toHaveBeenCalled();
+    expect(b.joinGame).toHaveBeenCalledTimes(1);
+  });
+
+  it('checkIn() on a frozen link asks the source nothing [lpw-24.1]', async () => {
+    const { opts, tickets } = wgOpts('local');
+    const { handle, b } = await wgBoot(opts, { account: [wgAccount()] });
+    b.onDisconnect?.();
+    expect(handle.linkFrozen(), 'precondition: the link is down').toBe(true);
+    handle.checkIn();
+    await wgFlush();
+    expect(tickets.ticket).not.toHaveBeenCalled();
+    expect(b.checkAccount).not.toHaveBeenCalled();
+  });
+
+  it('checkIn() toward an official target with a world source passed asks the source nothing [lpw-24.8]', async () => {
+    const { opts, tickets, events } = wgOpts('official');
+    const { handle, b } = await wgBoot(opts);
+    handle.checkIn();
+    await wgFlush();
+    expect(tickets.ticket).not.toHaveBeenCalled();
+    expect(tickets.signIn).not.toHaveBeenCalled();
+    expect(b.checkAccount).not.toHaveBeenCalled();
+    expect(events).toEqual([]);
+  });
+
+  it('a drop while a checkIn() ticket is pending: the ticket settling calls no procedure on the dead connection, reports nothing, joins nothing, and checkIn() works on the rebuilt connection [lpw-24.1]', async () => {
+    const { opts, tickets, events } = wgOpts('local');
+    tickets.ticket.mockResolvedValueOnce({ kind: 'unreachable' });
+    const { handle, b } = await wgBoot(opts);
+    const pending = wgDeferred<TicketOutcome>();
+    tickets.ticket.mockImplementationOnce(() => pending.promise);
+    handle.checkIn();
+    await wgFlush();
+    expect(tickets.ticket, 'precondition: the checkIn() ticket was asked').toHaveBeenCalledTimes(2);
+    b.onDisconnect?.();
+    pending.resolve({ kind: 'ticket', ticket: WG_TICKET });
+    await wgFlush();
+    expect(b.checkAccount, 'no procedure on the dead connection').not.toHaveBeenCalled();
+    expect(events, 'nothing reported for the dead connection').toEqual([{ kind: 'unreachable' }]);
+    expect(b.joinGame).not.toHaveBeenCalled();
+
+    const b1 = await wgReconnect(0);
+    handle.checkIn();
+    await wgFlush();
+    expect(b1.checkAccount.mock.calls).toEqual([[{ ticket: WG_TICKET }]]);
+    expect(events.at(-1)).toEqual({ kind: 'entitled' });
+    expect(b1.joinGame).toHaveBeenCalledTimes(1);
+    expect(b.joinGame).not.toHaveBeenCalled();
+  });
+
+  it('a drop while check_account is pending: its answer reports nothing and joins nothing [lpw-24.1]', async () => {
+    const { opts, events } = wgOpts('local');
+    const answer = wgDeferred<unknown>();
+    const { b } = await wgBoot(opts, {}, (b0) => {
+      b0.checkAccount.mockImplementation(() => answer.promise);
+    });
+    expect(b.checkAccount, 'precondition: the procedure is pending').toHaveBeenCalledTimes(1);
+    b.onDisconnect?.();
+    answer.resolve({ ok: true });
+    await wgFlush();
+    expect(events).toEqual([]);
+    expect(b.joinGame).not.toHaveBeenCalled();
+  });
+
+  for (const late of [{ ok: false }, { ok: true }] as const) {
+    it(`a check_account answer ${JSON.stringify(late)} of a dropped build, settling after the rebuilt build applied a snapshot with the own account row and joined, reports nothing and joins nothing [lpw-24.1]`, async () => {
+      const { opts } = wgOpts('local');
+      const answer = wgDeferred<unknown>();
+      const { b } = await wgBoot(opts, {}, (b0) => {
+        b0.checkAccount.mockImplementation(() => answer.promise);
+      });
+      expect(b.checkAccount, 'precondition: the procedure is pending').toHaveBeenCalledTimes(1);
+      const b1 = await wgReconnect(0, { account: [wgAccount()] });
+      expect(b1.joinGame, 'precondition: the known identity joined').toHaveBeenCalledTimes(1);
+      answer.resolve(late);
+      await wgFlush();
+      expect(opts.onWorldGate).not.toHaveBeenCalled();
+      expect(b1.joinGame).toHaveBeenCalledTimes(1);
+      expect(b.joinGame).not.toHaveBeenCalled();
+    });
+  }
+
+  // --- the reconnect token --------------------------------------------------------------------
+
+  for (const kind of ['local', 'private'] as const) {
+    it(`in a browser toward a ${kind} target, connect() removes this target's mr.authToken.v1 entry from localStorage, hands the first build no token, and keeps the build's token in sessionStorage only [lpw-24.6]`, async () => {
+      const otherKey = tokenKey('ws://elsewhere.invalid', DB);
+      localStorage.setItem(TOKEN_KEY, 'device-tok');
+      localStorage.setItem(otherKey, 'other-tok');
+      connect(kindOpts(kind));
+      await settle();
+      expect(localStorage.getItem(TOKEN_KEY), 'the earlier build`s token is gone').toBeNull();
+      expect(handedTokens(), 'the first build carries no token').toEqual([undefined]);
+      const b0 = H.builds[0];
+      b0.onConnect?.(conn0(b0), ID, 'anon-tok');
+      expect(sessionStorage.getItem(TOKEN_KEY)).toBe('anon-tok');
+      expect(entriesOf(localStorage), 'only another target`s entry is left').toEqual({
+        [otherKey]: 'other-tok',
+      });
+    });
+  }
+
+  it('in the desktop shell toward a local target, the localStorage token reaches the build and stays, and the known identity joins with no ticket request [lpw-24.7]', async () => {
+    localStorage.setItem(TOKEN_KEY, 'device-tok');
+    const { opts, tickets } = wgOpts('local', { desktop: true });
+    const { b } = await wgBoot(opts, { account: [wgAccount()] }, undefined, 'device-tok');
+    expect(handedTokens()).toEqual(['device-tok']);
+    expect(localStorage.getItem(TOKEN_KEY)).toBe('device-tok');
+    expect(b.joinGame).toHaveBeenCalledTimes(1);
+    expect(tickets.ticket).not.toHaveBeenCalled();
+  });
+
+  it('toward an official target, a localStorage entry under the target`s key is left untouched [lpw-24.8]', async () => {
+    localStorage.setItem(TOKEN_KEY, 'device-tok');
+    const { opts } = wgOpts('official');
+    await wgBoot(opts);
+    expect(handedTokens()).toEqual([undefined]);
+    expect(entriesOf(localStorage)).toEqual({ [TOKEN_KEY]: 'device-tok' });
+  });
+
+  // --- official and test ----------------------------------------------------------------------
+
+  for (const kind of ['official', 'test'] as const) {
+    it(`toward a ${kind} target with a world source passed, the source is never asked across a connect, a drop and a reconnect [lpw-24.8]`, async () => {
+      const { opts, tickets } = wgOpts(kind);
+      const { b } = await wgBoot(opts);
+      expect(b.joinGame, 'joined as today').toHaveBeenCalledTimes(1);
+      const b1 = await wgReconnect(0);
+      expect(b1.joinGame, 'rejoined as today').toHaveBeenCalledTimes(1);
+      expect(tickets.ticket).not.toHaveBeenCalled();
+      expect(tickets.signIn).not.toHaveBeenCalled();
+      expect(b.checkAccount).not.toHaveBeenCalled();
+      expect(b1.checkAccount).not.toHaveBeenCalled();
+      expect(opts.onWorldGate).not.toHaveBeenCalled();
+    });
+  }
 });

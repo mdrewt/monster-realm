@@ -13,10 +13,16 @@ import { ownerSql, sqlRows } from './stdb';
 // local-identity.spec.ts: where the page keeps its anonymous reconnect token decides who a new
 // page of the same browser profile is.
 //
-//   local     the token lives in the origin's localStorage: a page closed and a new page opened
-//             in the same profile resume the same identity and the same character, and a second
-//             page opened while the first is connected joins as that identity too; closing
-//             either page leaves the character in the world while the other stays connected;
+//   local, desktop shell (the document's top-level `host: 'desktop'`)
+//             the token lives in the origin's localStorage: a page closed and a new page opened
+//             in the same profile resume the same identity and the same character with no request
+//             for a world ticket, and a second page opened while the first is connected joins as
+//             that identity too; closing either page leaves the character in the world while the
+//             other stays connected;
+//   local, browser (no `host`), and private
+//             the token lives in per-tab sessionStorage and none in localStorage: a new page joins
+//             as a new identity, and a token left in localStorage under the target's key is
+//             removed and never adopted;
 //   test      the token lives in per-tab sessionStorage, and an anonymous page joins: a new page
 //             joins as a new identity;
 //   official  the token lives in per-tab sessionStorage: a new page is a new identity. The suite's
@@ -81,15 +87,49 @@ function newPlayers(before: readonly string[], label: string): string[] {
   return playerIdentities(label).filter((id) => !before.includes(id));
 }
 
-/** Serve the suite target as a shell document of `kind` to every page of `ctx`. */
-async function serveShellDocument(ctx: BrowserContext, kind: TargetKind): Promise<void> {
+/** A world certificate fingerprint for the desktop documents: with it a browser page of a loopback
+ *  `local` target has a world name, so only the desktop shell's own rule keeps it from asking for a
+ *  ticket. */
+const DESKTOP_FINGERPRINT = 'e2e-desktop-world-pin';
+
+/** Serve the suite target as a shell document of `kind` to every page of `ctx`; `extra.host`
+ *  puts the top-level `host` in the document and `extra.fingerprint` the connection's
+ *  fingerprint. */
+async function serveShellDocument(
+  ctx: BrowserContext,
+  kind: TargetKind,
+  extra: { readonly host?: 'desktop'; readonly fingerprint?: string } = {},
+): Promise<void> {
+  const connection = {
+    uri: SUITE_URI,
+    db: SUITE_DB,
+    kind,
+    ...(extra.fingerprint === undefined ? {} : { fingerprint: extra.fingerprint }),
+  };
+  const doc = extra.host === undefined ? { connection } : { connection, host: extra.host };
   await ctx.route('**/shell-config.js', (route) =>
     route.fulfill({
       status: 200,
       contentType: 'text/javascript',
-      body: renderShellConfigScript({ connection: { uri: SUITE_URI, db: SUITE_DB, kind } }),
+      body: renderShellConfigScript(doc),
     }),
   );
+}
+
+/** Serve the desktop shell's document of a `local` target to every page of `ctx`. */
+function serveDesktopDocument(ctx: BrowserContext): Promise<void> {
+  return serveShellDocument(ctx, 'local', { host: 'desktop', fingerprint: DESKTOP_FINGERPRINT });
+}
+
+/** Record the path of every request any page of `ctx` makes whose path ends in `/ticket`. Only
+ *  the path is kept (never a header or a body). */
+function recordTicketRequests(ctx: BrowserContext): string[] {
+  const paths: string[] = [];
+  ctx.on('request', (request) => {
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/ticket')) paths.push(path);
+  });
+  return paths;
 }
 
 /** Open a new page of `ctx` on the game and wait until it holds an identity and an own
@@ -230,7 +270,7 @@ async function expectJoinWithheld(page: Page, identity: string, label: string): 
 }
 
 test.describe
-  .serial('a local target keeps the player on the device; an official one keeps it per tab', () => {
+  .serial('the desktop shell keeps a local player on the device; a browser and an official target keep it per tab', () => {
     let browser: Browser;
 
     test.beforeAll(async () => {
@@ -241,12 +281,12 @@ test.describe
       await browser.close();
     });
 
-    test('LPW2-5-RESUME: a closed page of a local target is resumed, same identity and same tile, by a new page of the same profile [lpw-2.5]', async () => {
+    test('LPW24-7-RESUME: a closed desktop-shell page of a local target is resumed, same identity and same tile, by a new page of the same profile, with no ticket request [lpw-24.7]', async () => {
       test.setTimeout(120_000);
       const before = playerIdentities('resume: players before');
       const ctx = await browser.newContext();
       try {
-        await serveShellDocument(ctx, 'local');
+        await serveDesktopDocument(ctx);
         const first = await openJoined(ctx, 'resume: page 1');
         const spawn = first.tile;
         const walked = await walkOneTile(first.page, 'resume: page 1');
@@ -266,6 +306,8 @@ test.describe
           })
           .toBe(0);
 
+        // The relaunch: every request of the new page is recorded from before it loads.
+        const ticketRequests = recordTicketRequests(ctx);
         const second = await openJoined(ctx, 'resume: page 2');
         expect(second.identity, 'resume: page 2 resumes page 1 identity').toBe(first.identity);
         await expect
@@ -280,6 +322,7 @@ test.describe
         expect(await tokenKeys(second.page), 'resume: the token key lives in localStorage').toEqual(
           { local: [SUITE_TOKEN_KEY], session: [] },
         );
+        expect(ticketRequests, 'resume: the relaunched page asked for no ticket').toEqual([]);
       } finally {
         await ctx.close();
       }
@@ -364,13 +407,13 @@ test.describe
         .toEqual([]);
     });
 
-    test('LPW2-7-SHARED: two pages of a local target share one identity, and closing either leaves the character in the world while the other plays on [lpw-2.7]', async () => {
+    test('LPW24-7-SHARED: two desktop-shell pages of a local target share one identity, and closing either leaves the character in the world while the other plays on [lpw-24.7]', async () => {
       test.setTimeout(180_000);
       const before = playerIdentities('shared: players before');
       const ctx = await browser.newContext();
       let identity = '';
       try {
-        await serveShellDocument(ctx, 'local');
+        await serveDesktopDocument(ctx);
         const a = await openJoined(ctx, 'shared: page A');
         identity = a.identity;
 
@@ -412,6 +455,106 @@ test.describe
       await expect
         .poll(() => newPlayers(before, 'shared: players after close'), {
           message: 'shared: the closed context leaves no player behind',
+          timeout: SESSION_END_MS,
+        })
+        .toEqual([]);
+    });
+
+    test('LPW24-6-TAB: a browser page of a local target keeps its token per tab and none on the device, and a new page of the same profile joins as a new identity [lpw-24.6]', async () => {
+      test.setTimeout(120_000);
+      const before = playerIdentities('tab: players before');
+      const ctx = await browser.newContext();
+      try {
+        await serveShellDocument(ctx, 'local');
+        const first = await openJoined(ctx, 'tab: page 1');
+        expect(
+          await tokenKeys(first.page),
+          'tab: page 1 keeps its token key in sessionStorage, none on the device',
+        ).toEqual({ local: [], session: [SUITE_TOKEN_KEY] });
+        await first.page.close();
+        await expect
+          .poll(() => rowsFor(first.identity, 'tab: page 1 closed'), {
+            message: 'tab: the server ended page 1 session (its player row is gone)',
+            timeout: SESSION_END_MS,
+          })
+          .toBe(0);
+
+        const second = await openJoined(ctx, 'tab: page 2');
+        expect(second.identity, 'tab: page 2 is a different identity').not.toBe(first.identity);
+        expect(
+          await tokenKeys(second.page),
+          'tab: page 2 keeps its token key in sessionStorage, none on the device',
+        ).toEqual({ local: [], session: [SUITE_TOKEN_KEY] });
+      } finally {
+        await ctx.close();
+      }
+      await expect
+        .poll(() => newPlayers(before, 'tab: players after close'), {
+          message: 'tab: the closed context leaves no player behind',
+          timeout: SESSION_END_MS,
+        })
+        .toEqual([]);
+    });
+
+    test('LPW24-6-FORGET: a browser page of a local target removes the device token a desktop-shell page left for that target and joins as its own identity [lpw-24.6]', async () => {
+      test.setTimeout(120_000);
+      const before = playerIdentities('forget: players before');
+      const ctx = await browser.newContext();
+      try {
+        // A desktop-shell page of the same origin leaves a real token on the device.
+        await serveDesktopDocument(ctx);
+        const desktop = await openJoined(ctx, 'forget: desktop page');
+        expect(
+          await tokenKeys(desktop.page),
+          'forget: the desktop page left its token key on the device',
+        ).toEqual({ local: [SUITE_TOKEN_KEY], session: [] });
+        await desktop.page.close();
+        await expect
+          .poll(() => rowsFor(desktop.identity, 'forget: desktop page closed'), {
+            message: 'forget: the server ended the desktop page session (its player row is gone)',
+            timeout: SESSION_END_MS,
+          })
+          .toBe(0);
+
+        // The same profile, now served a browser's document of the same target.
+        await ctx.unroute('**/shell-config.js');
+        await serveShellDocument(ctx, 'local');
+        const tab = await openJoined(ctx, 'forget: browser page');
+        expect(tab.identity, 'forget: the browser page did not adopt the device token').not.toBe(
+          desktop.identity,
+        );
+        expect(
+          await tokenKeys(tab.page),
+          'forget: the device token key is gone and the browser page keeps its own per tab',
+        ).toEqual({ local: [], session: [SUITE_TOKEN_KEY] });
+      } finally {
+        await ctx.close();
+      }
+      await expect
+        .poll(() => newPlayers(before, 'forget: players after close'), {
+          message: 'forget: the closed context leaves no player behind',
+          timeout: SESSION_END_MS,
+        })
+        .toEqual([]);
+    });
+
+    test('LPW24-6-PRIVATE: a browser page of a private target keeps its token per tab and none on the device [lpw-24.6]', async () => {
+      test.setTimeout(90_000);
+      const before = playerIdentities('private: players before');
+      const ctx = await browser.newContext();
+      try {
+        await serveShellDocument(ctx, 'private');
+        const joined = await openJoined(ctx, 'private: page 1');
+        expect(
+          await tokenKeys(joined.page),
+          'private: the page keeps its token key in sessionStorage, none on the device',
+        ).toEqual({ local: [], session: [SUITE_TOKEN_KEY] });
+      } finally {
+        await ctx.close();
+      }
+      await expect
+        .poll(() => newPlayers(before, 'private: players after close'), {
+          message: 'private: the closed context leaves no player behind',
           timeout: SESSION_END_MS,
         })
         .toEqual([]);

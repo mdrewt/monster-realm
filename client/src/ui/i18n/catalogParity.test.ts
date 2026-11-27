@@ -998,21 +998,50 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       feedback.calls.filter((c) => c.module === 'a11y'),
       'shell/feedback.ts resolves exactly the world region name, as a literal key',
     ).toEqual([{ module: 'a11y', orig: 't', kind: 'literal', literal: 'a11y.world.region' }]);
-    // shell/session.ts resolves exactly the guarded send's disconnected line, through the i18n
-    // resolver's `tf`, and nothing through a11yCopy.
+    // shell/session.ts resolves the guarded send's disconnected line and the world gate's lines,
+    // through the i18n resolver's `t` and `tf`, and nothing through a11yCopy.
+    // Named intentional change:+ the world gate view's and status line's keys, 7
+    // `claim.gate.*` and 10 plain `world.gate.*` through `t`, `world.gate.{moved,refused}.body`
+    // through `tf`. Compared as a sorted set of (kind, binding, key): a key may be resolved at more
+    // than one call site and the source order is the implementation's.
     expect(
-      session.calls.filter((c) => c.module === 'i18n'),
-      'shell/session.ts resolves exactly the disconnected line, as a literal key',
+      Array.from(
+        new Set(
+          session.calls
+            .filter((c) => c.module === 'i18n')
+            .map((c) => `${c.kind} ${c.orig} ${String(c.literal)}`),
+        ),
+      ).sort(),
+      'shell/session.ts resolves exactly the disconnected line and the world gate lines, as literal keys',
     ).toEqual([
-      { module: 'i18n', orig: 'tf', kind: 'literal', literal: 'chrome.status.disconnected' },
+      'literal t claim.gate.notOwned.body',
+      'literal t claim.gate.notOwned.title',
+      'literal t claim.gate.signIn.desc',
+      'literal t claim.gate.signIn.title',
+      'literal t claim.gate.stays',
+      'literal t claim.gate.store.desc',
+      'literal t claim.gate.store.title',
+      'literal t world.gate.again.desc',
+      'literal t world.gate.again.row',
+      'literal t world.gate.check.title',
+      'literal t world.gate.failed.body',
+      'literal t world.gate.moved.title',
+      'literal t world.gate.retry.desc',
+      'literal t world.gate.retry.row',
+      'literal t world.gate.signIn.body',
+      'literal t world.gate.signIn.row',
+      'literal t world.gate.unreachable.body',
+      'literal tf chrome.status.disconnected',
+      'literal tf world.gate.moved.body',
+      'literal tf world.gate.refused.body',
     ]);
     expect(
       session.calls.filter((c) => c.module === 'a11y'),
       'shell/session.ts makes no a11y-bound call',
     ).toEqual([]);
     // The union of the literal keys the three files resolve, per binding, is a fixed list written
-    // out here (never computed from one of the files): main.ts's i18n list above plus the
-    // disconnected line, and `a11y.world.region`, whichever of the three files resolves a key. A
+    // out here (never computed from one of the files): main.ts's i18n list above plus
+    // shell/session.ts's keys, and `a11y.world.region`, whichever of the three files resolves a key. A
     // key that leaves main.ts for one of the shell modules keeps the union; a key that is dropped
     // on the way shrinks it.
     const unionOfLiteralKeys = (module: 'i18n' | 'a11y'): string[] =>
@@ -1027,6 +1056,8 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       unionOfLiteralKeys('i18n'),
       'the i18n keys main.ts, shell/feedback.ts and shell/session.ts resolve together',
     ).toEqual([
+      // Named intentional change:+ the 19 keys shell/session.ts's world gate resolves
+      // (7 `claim.gate.*`, 12 `world.gate.*`).
       'chrome.chip.ok',
       'chrome.rename.updated',
       'chrome.status.bugBundleBlocked',
@@ -1038,6 +1069,13 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       'chrome.status.serverNewer',
       'chrome.status.serverOlder',
       'chrome.status.zoneEntered',
+      'claim.gate.notOwned.body',
+      'claim.gate.notOwned.title',
+      'claim.gate.signIn.desc',
+      'claim.gate.signIn.title',
+      'claim.gate.stays',
+      'claim.gate.store.desc',
+      'claim.gate.store.title',
       'dialogue.ended.leftZone',
       'dialogue.ended.npcGone',
       'dialogue.ended.walkedAway',
@@ -1070,6 +1108,18 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       'shop.feedback.sell.count',
       'shop.feedback.sell.item',
       'tradeSession.notice.closed',
+      'world.gate.again.desc',
+      'world.gate.again.row',
+      'world.gate.check.title',
+      'world.gate.failed.body',
+      'world.gate.moved.body',
+      'world.gate.moved.title',
+      'world.gate.refused.body',
+      'world.gate.retry.desc',
+      'world.gate.retry.row',
+      'world.gate.signIn.body',
+      'world.gate.signIn.row',
+      'world.gate.unreachable.body',
     ]);
     expect(
       unionOfLiteralKeys('a11y'),
