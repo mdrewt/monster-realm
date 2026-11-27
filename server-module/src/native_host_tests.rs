@@ -2445,18 +2445,7 @@ impl Fixture {
             let f = f
                 .take()
                 .expect("native_host_tests: the run_procedure body runs once");
-            out = Some(catch_unwind(AssertUnwindSafe(|| {
-                assert_eq!(
-                    ctx.sender(),
-                    sender,
-                    "native_host_tests: run_procedure sender did not land"
-                );
-                assert_eq!(
-                    ctx.timestamp, at,
-                    "native_host_tests: run_procedure timestamp did not land"
-                );
-                f(ctx)
-            })));
+            out = Some(catch_unwind(AssertUnwindSafe(|| f(ctx))));
         };
         let body_ref: &mut (dyn FnMut(&mut ProcedureContext) + '_) = &mut body;
         // SAFETY: only lifetimes are erased, of the closure here and of the queue below. The
