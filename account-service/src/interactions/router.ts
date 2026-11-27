@@ -8,6 +8,9 @@ import { endedPage, notOwnedPage, PAGE_HEADERS, signInPage } from './pages.ts';
 export interface Account {
   readonly sub: string;
   readonly entitled: boolean;
+  /** The epoch second the password was last reset. A code or refresh token issued, or signed in
+   *  for, in an earlier second is refused. Absent: never reset. */
+  readonly passwordChangedAt?: number;
 }
 
 export type SignInOutcome =
@@ -125,6 +128,10 @@ export function createInteractionRouter(options: {
     }
 
     const outcome = await signIn.attempt(email, password);
+    // The second the password was checked becomes the session's login time, which every code and
+    // refresh token of this sign-in carries as `authTime`: a reset after this second ends them,
+    // however late the resume that mints the code.
+    const checkedAt = Math.floor(Date.now() / 1000);
     switch (outcome.kind) {
       case 'signed-in': {
         const grant = new provider.Grant({
@@ -138,7 +145,10 @@ export function createInteractionRouter(options: {
           await provider.interactionResult(
             req,
             res,
-            { login: { accountId: outcome.sub, remember: false }, consent: { grantId } },
+            {
+              login: { accountId: outcome.sub, remember: false, ts: checkedAt },
+              consent: { grantId },
+            },
             { mergeWithLastSubmission: false },
           ),
         );

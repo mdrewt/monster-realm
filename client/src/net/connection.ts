@@ -411,7 +411,7 @@ export function connect(opts: ConnectionOptions): Connection {
    * means the new connection silently ingests nothing for it (re-wire
    * everything or the reconnect looks connected but stays empty).
    */
-  function wireTables(conn: DbConnection, runScope: () => void): void {
+  function wireTables(conn: DbConnection, runScope: () => void, onOwnAccount: () => void): void {
     // A row handler that throws stops the SDK dispatching the rest of that message, whose rows are
     // already in the SDK cache: a view whose own handler never ran would stay clean and stale. So
     // a throw from any other table's handler marks every owner view and schedules the flush, then
@@ -789,6 +789,8 @@ export function connect(opts: ConnectionOptions): Connection {
     // `prev` is read BEFORE the upsert; a still-connected player gets the benign "already joined".
     // A superseded socket neither writes the account slot nor joins: its write would consume the
     // edge the current build still has to see. Joins go out on the current, already-wrapped handle.
+    // Every own row then goes to `onOwnAccount`, which sends a guest claim the join gate left
+    // waiting for this row.
     const ingestAccount = (row: SdkAccountRow): void => {
       const live = current;
       if (live === undefined || rawConnectionOf.get(live) !== conn) return;
@@ -801,6 +803,7 @@ export function connect(opts: ConnectionOptions): Connection {
       if (shouldRejoinAfterAccountChange(prev, next.status, codeUnconsumed)) {
         attemptJoin(live, name, opts.onError);
       }
+      onOwnAccount();
     };
     conn.db.my_account.onInsert(
       recoverViewsOnThrow((_ctx, row) => ingestAccount(row as unknown as SdkAccountRow)),
@@ -868,6 +871,50 @@ export function connect(opts: ConnectionOptions): Connection {
     // true once a newer attempt exists. Number-token comparison, no TDZ dependence on `current`.
     const gen = buildGen;
     const stale = (): boolean => gen !== buildGen;
+
+    // This connection's guest claim: 'awaiting' once the join gate found a claim code but no own
+    // account row, 'sent' once complete_guest_claim went out. Whichever path sends sets 'sent', so
+    // the claim goes out at most once per connection.
+    let claim: 'idle' | 'awaiting' | 'sent' = 'idle';
+    // Sends complete_guest_claim for the stored code and reports the reducer's answer through
+    // onClaimResult. Answers the code it sent, or undefined when there is none or the call threw
+    // (the latch is then unchanged).
+    const sendClaim = (c: DbConnection): string | undefined => {
+      const code = claimCode.read(globalThis, opts.uri, opts.db);
+      if (code === undefined) return undefined;
+      let pendingClaim: Promise<void>;
+      try {
+        // Call on the RAW connection, NOT wrapReducerLogging(c): the dev-observability
+        // Proxy JSON-stringifies reducer args to the onSend sink, and `code` is a bearer
+        // secret (whoever holds it can steal this guest's progress). joinGame's `{name}` is
+        // sanctioned free text; a claim code categorically is not (AUTH-57 spirit; the G21
+        // scanner can't see this indirect sink — its own residual R4). Assigned first so the
+        // `.reducers.completeGuestClaim({ code })` call stays contiguous (biome breaks a short
+        // receiver's method chain otherwise) — G18 pins that exact needle.
+        pendingClaim = c.reducers.completeGuestClaim({ code });
+      } catch (err) {
+        console.error('[claim] complete_guest_claim threw', err);
+        return undefined;
+      }
+      claim = 'sent';
+      // Two-argument `then`: the reject arm sees only the reducer's rejection, so a throw
+      // inside the success handler is logged and never reported as a refused claim.
+      pendingClaim
+        .then(
+          () => opts.onClaimResult?.({ ok: true, message: '' }),
+          (err) => opts.onClaimResult?.({ ok: false, message: (err as Error)?.message ?? '' }),
+        )
+        .catch((err) => console.error('[claim] result handler error', err));
+      return code;
+    };
+    // The own account row reached the store. A claim the gate left waiting goes out now, alone:
+    // onClaimPending is the gate's (the caller re-opens its claim prompt from it on a reconnect),
+    // so this path reports only through onClaimResult.
+    const sendAwaitedClaim = (): void => {
+      if (stale() || claim !== 'awaiting') return;
+      if (!claimCode.hasUnconsumed(globalThis, opts.uri, opts.db)) return;
+      sendClaim(conn);
+    };
 
     // The world scope of THIS build: which `character` query sets it holds beyond the base set.
     // Per build, so a rebuilt connection starts with none. worldScope.ts decides; this block only
@@ -1004,31 +1051,23 @@ export function connect(opts: ConnectionOptions): Connection {
                 opts.onAccountRequired?.();
               } else if (!isAccount || !codeUnconsumed) {
                 attemptJoin(wrapReducerLogging(c, opts.onSend), name, opts.onError);
-              } else if (store.ownAccount(identity) !== undefined) {
+              } else {
                 // AUTH-53: re-issue complete_guest_claim on THIS connection's first applied snapshot,
                 // unconditionally — a pre-drop promise never settles. onClaimPending is
                 // a UX notification fired ALONGSIDE the reducer call, never a substitute for it.
-                const code = claimCode.read(globalThis, opts.uri, opts.db)!;
-                // Call on the RAW connection, NOT wrapReducerLogging(c): the dev-observability
-                // Proxy JSON-stringifies reducer args to the onSend sink, and `code` is a bearer
-                // secret (whoever holds it can steal this guest's progress). joinGame's `{name}` is
-                // sanctioned free text; a claim code categorically is not (AUTH-57 spirit; the G21
-                // scanner can't see this indirect sink — its own residual R4). Assigned first so the
-                // `.reducers.completeGuestClaim({ code })` call stays contiguous (biome breaks a short
-                // receiver's method chain otherwise) — G18 pins that exact needle.
-                const pendingClaim = c.reducers.completeGuestClaim({ code });
-                // Two-argument `then`: the reject arm sees only the reducer's rejection, so a throw
-                // inside the success handler is logged and never reported as a refused claim.
-                pendingClaim
-                  .then(
-                    () => opts.onClaimResult?.({ ok: true, message: '' }),
-                    (err) =>
-                      opts.onClaimResult?.({ ok: false, message: (err as Error)?.message ?? '' }),
-                  )
-                  .catch((err) => console.error('[claim] result handler error', err));
-                opts.onClaimPending?.(code);
-              } else {
-                opts.onClaimAwaitingAccount?.(); // UX polish only — the veto above is what makes F2 safe
+                // The SDK calls this before it dispatches the snapshot's row callbacks, so an own
+                // account row of this snapshot is in its cache and not yet in the store.
+                const code =
+                  store.ownAccount(identity) !== undefined || ownAccountCached(conn)
+                    ? sendClaim(c)
+                    : undefined;
+                if (code !== undefined) {
+                  opts.onClaimPending?.(code);
+                } else {
+                  // The own row's arrival sends it (sendAwaitedClaim).
+                  claim = 'awaiting';
+                  opts.onClaimAwaitingAccount?.(); // UX polish only — the veto above is what makes F2 safe
+                }
               }
               // The link is live: open the world scope. The first run usually finds no own rows
               // yet (they arrive as row callbacks after this one); each own-row callback runs it
@@ -1199,7 +1238,7 @@ export function connect(opts: ConnectionOptions): Connection {
         handleDrop();
       })
       .build();
-    wireTables(conn, runScope);
+    wireTables(conn, runScope, sendAwaitedClaim);
     // A new connection is a new cache: every owner view is rebuilt from it on the next batch,
     // whether or not this rebuild reset the store (reconnectNow and continueAnonymously do not).
     ownerViews.markAllDirty();
@@ -1208,6 +1247,14 @@ export function connect(opts: ConnectionOptions): Connection {
     const wrapped = wrapReducerLogging(conn, opts.onSend);
     rawConnectionOf.set(wrapped, conn);
     return wrapped;
+  }
+
+  /** Whether `c`'s cache holds the own `my_account` row. */
+  function ownAccountCached(c: DbConnection): boolean {
+    for (const row of c.db.my_account.iter()) {
+      if (accountRowToStore(row as unknown as SdkAccountRow).identity === identity) return true;
+    }
+    return false;
   }
 
   // Wrapped (logging) connection -> the RAW connection it wraps. startSignIn sends the claim

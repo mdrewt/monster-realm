@@ -130,11 +130,12 @@ export function createAccountProvider(options: {
     clientBasedCORS: (_ctx, origin, client) =>
       (client.redirectUris ?? []).some((uri) => new URL(uri).origin === origin),
     // The account is read afresh at every issuance. A code or refresh token of an account that is
-    // gone or not entitled is refused, and its whole chain goes with it. A step that fails
-    // to answer throws: that is an error, never "not entitled".
+    // gone or not entitled, or one issued or signed in for in an earlier second than the
+    // account's last password reset, is refused, and its whole chain goes with it. A step that
+    // fails to answer throws: that is an error, never "not entitled".
     async findAccount(_ctx, sub, token) {
       const account = await signIn?.account(sub);
-      if (account?.entitled === true) {
+      if (account?.entitled === true && postdatesReset(token, account.passwordChangedAt ?? 0)) {
         return { accountId: sub, claims: () => ({ ...accountClaims({ sub, entitled: true }) }) };
       }
       const grantId = (token as { readonly grantId?: unknown } | undefined)?.grantId;
@@ -226,6 +227,22 @@ export function createAccountProvider(options: {
     callback(req, res);
   };
   return { provider, handler };
+}
+
+/**
+ * Whether a presented code or refresh token was issued, and its sign-in's password checked, no
+ * earlier than the second `changedAt`. A lookup with no token (a sign-in being completed) is.
+ * A token missing either second is not.
+ */
+function postdatesReset(token: unknown, changedAt: number): boolean {
+  if (token === undefined) return true;
+  const { iat, authTime } = token as { readonly iat?: unknown; readonly authTime?: unknown };
+  return (
+    typeof iat === 'number' &&
+    typeof authTime === 'number' &&
+    iat >= changedAt &&
+    authTime >= changedAt
+  );
 }
 
 /** Answered by this service with 503, never sent on to the client's redirect address. */

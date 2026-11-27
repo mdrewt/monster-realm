@@ -69,6 +69,8 @@ const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
 
 interface StoredAccount extends DevAccount {
   readonly passwordHash: string;
+  /** The epoch second the password was last reset; 0 for one never reset. */
+  readonly passwordChangedAt: number;
 }
 
 /** An argon2id hash in the PHC string format, under a fresh 16-byte salt. */
@@ -117,6 +119,8 @@ export function devAccounts(adapter: (model: string) => Adapter): DevAccounts {
         email: account.email,
         passwordHash: account.passwordHash,
         entitled: account.entitled,
+        // Absent reads as 0, so a password that was never reset writes no key.
+        ...(account.passwordChangedAt > 0 ? { passwordChangedAt: account.passwordChangedAt } : {}),
       },
       // The store keeps a record given no lifetime until it is destroyed.
       undefined as unknown as number,
@@ -137,6 +141,7 @@ export function devAccounts(adapter: (model: string) => Adapter): DevAccounts {
         email: id,
         entitled: options.entitled,
         passwordHash,
+        passwordChangedAt: 0,
       };
       await write(account);
       return { account: published(account), password };
@@ -144,7 +149,10 @@ export function devAccounts(adapter: (model: string) => Adapter): DevAccounts {
     async resetPassword(email) {
       const password = generatePassword();
       const passwordHash = await hashPassword(password);
-      const account = { ...(await read(email)), passwordHash };
+      // Whole seconds, as a token's `iat` is: the provider refuses a code or refresh token issued
+      // in an earlier second.
+      const passwordChangedAt = Math.floor(Date.now() / 1000);
+      const account = { ...(await read(email)), passwordHash, passwordChangedAt };
       await write(account);
       return { account: published(account), password };
     },
@@ -210,7 +218,13 @@ export function devPasswordStep(
     },
     async account(sub): Promise<Account | undefined> {
       const stored = parseRecord(await records.findByUid(sub));
-      return stored === undefined ? undefined : { sub: stored.sub, entitled: stored.entitled };
+      return stored === undefined
+        ? undefined
+        : {
+            sub: stored.sub,
+            entitled: stored.entitled,
+            passwordChangedAt: stored.passwordChangedAt,
+          };
     },
   };
 }
@@ -281,16 +295,30 @@ function normaliseEmail(email: string): string | undefined {
 
 function parseRecord(payload: unknown): StoredAccount | undefined {
   if (typeof payload !== 'object' || payload === null) return undefined;
-  const { uid, email, passwordHash, entitled } = payload as Record<string, unknown>;
+  const {
+    uid,
+    email,
+    passwordHash,
+    entitled,
+    passwordChangedAt = 0,
+  } = payload as Record<string, unknown>;
   if (
     typeof uid !== 'string' ||
     typeof email !== 'string' ||
     typeof passwordHash !== 'string' ||
-    typeof entitled !== 'boolean'
+    typeof entitled !== 'boolean' ||
+    !Number.isSafeInteger(passwordChangedAt) ||
+    (passwordChangedAt as number) < 0
   ) {
     return undefined;
   }
-  return { sub: uid, email, passwordHash, entitled };
+  return {
+    sub: uid,
+    email,
+    passwordHash,
+    entitled,
+    passwordChangedAt: passwordChangedAt as number,
+  };
 }
 
 function published(account: StoredAccount): DevAccount {
