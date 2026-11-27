@@ -7,6 +7,11 @@ export type KeySource =
   | { readonly kind: 'file'; readonly path: string; readonly generateIfMissing: boolean }
   | { readonly kind: 'external' };
 
+/** The Steam app a profile checks players against. */
+export interface SteamConfig {
+  readonly appId: number;
+}
+
 export interface Config {
   readonly profile: Profile;
   readonly issuer: string;
@@ -15,12 +20,22 @@ export interface Config {
   readonly databasePath: string;
   readonly keys: KeySource;
   readonly signIn: SignInMethod;
+  /**
+   * Present when `MR_STEAM_APP_ID` is set: the profile offers the Steam sign-ins. A dev profile
+   * offers them beside its own `signIn`. No Steam key is held here: `steam/webApi.ts` reads it.
+   */
+  readonly steam?: SteamConfig;
 }
 
 export const LOCAL_DEV_ISSUER = 'http://localhost:4455';
 export const HOSTED_DEV_ISSUER = 'https://auth.monster-realm.spookyowltech.com';
 /** Where the local-dev profile keeps its database and keys: `account-service/.data`, ignored by git. */
 export const LOCAL_DEV_DATA_DIR = resolve(import.meta.dirname, '..', '.data');
+/**
+ * Valve's development app (Spacewar), the only app a dev profile checks Steam as. Every Steam
+ * account can run it, so it proves a sign-in and never ownership of the game.
+ */
+export const STEAM_DEV_APP_ID = 480;
 
 /**
  * A setting the service refuses to start with. `setting` is the env name at fault. The message
@@ -45,10 +60,13 @@ const SETTINGS: ReadonlySet<string> = new Set([
   'MR_ACCOUNT_KEY_FILE',
   'MR_ACCOUNT_HOST',
   'MR_ACCOUNT_PORT',
+  'MR_STEAM_APP_ID',
+  'MR_STEAM_WEB_API_KEY',
+  'MR_STEAM_PUBLISHER_KEY',
 ]);
-const SETTING_PREFIX = 'MR_ACCOUNT_';
-// A Steam key setting under any name of that shape; the publisher key is MR_STEAM_PUBLISHER_KEY.
-const STEAM_KEY_SETTING = /^MR_STEAM_.*KEY/i;
+const SETTING_PREFIXES = ['MR_ACCOUNT_', 'MR_STEAM_'];
+const APP_ID = /^[1-9]\d{0,9}$/;
+const MAX_APP_ID = 0xffff_ffff;
 const DEV_HOSTNAMES = [LOCAL_DEV_ISSUER, HOSTED_DEV_ISSUER].map(
   (issuer) => new URL(issuer).hostname,
 );
@@ -69,9 +87,11 @@ export function loadConfig(env: Readonly<Record<string, string | undefined>>): C
     if (typeof value === 'string' && value !== '') set.set(name, value);
   }
 
-  // A misspelt or wrong-case setting is refused: it must never fall back to a default.
+  // A misspelt or wrong-case setting is refused: it must never fall back to a default, and a
+  // Steam key under another spelling must never be taken for "no key was given".
   for (const name of set.keys()) {
-    if (name.trim().toUpperCase().startsWith(SETTING_PREFIX) && !SETTINGS.has(name)) {
+    const folded = name.trim().toUpperCase();
+    if (SETTING_PREFIXES.some((prefix) => folded.startsWith(prefix)) && !SETTINGS.has(name)) {
       throw new ConfigError(name, 'is not a setting of the account service');
     }
   }
@@ -90,6 +110,7 @@ export function loadConfig(env: Readonly<Record<string, string | undefined>>): C
         'a key file is a dev setting; the production profile signs through an external signer',
       );
     }
+    const steam = productionSteam(set);
     const dataDir = requiredDataDir(set, profile);
     return {
       profile,
@@ -99,14 +120,11 @@ export function loadConfig(env: Readonly<Record<string, string | undefined>>): C
       databasePath: join(dataDir, 'account.sqlite'),
       keys: { kind: 'external' },
       signIn: signInMethod(set, profile, 'steam'),
+      ...steam,
     };
   }
 
-  for (const name of set.keys()) {
-    if (STEAM_KEY_SETTING.test(name.trim())) {
-      throw new ConfigError(name, `a Steam key is a production setting; ${profile} takes none`);
-    }
-  }
+  const steam = devSteam(set, profile);
   if (set.has('MR_ACCOUNT_ISSUER')) {
     throw new ConfigError(
       'MR_ACCOUNT_ISSUER',
@@ -129,7 +147,72 @@ export function loadConfig(env: Readonly<Record<string, string | undefined>>): C
       generateIfMissing: profile === 'local-dev',
     },
     signIn: signInMethod(set, profile, 'dev-password'),
+    ...steam,
   };
+}
+
+/**
+ * A dev profile's Steam settings: App ID 480 alone, with an ordinary Web API key or none. The
+ * publisher key opens every partner API of the game's own app, so a dev profile refuses it under
+ * its own name, as it refuses any other app id: a dev deployment can never act for the game.
+ */
+function devSteam(
+  set: ReadonlyMap<string, string>,
+  profile: Profile,
+): { readonly steam?: SteamConfig } {
+  if (set.has('MR_STEAM_PUBLISHER_KEY')) {
+    throw new ConfigError(
+      'MR_STEAM_PUBLISHER_KEY',
+      `the publisher key is a production setting; ${profile} takes none`,
+    );
+  }
+  const appId = set.get('MR_STEAM_APP_ID');
+  if (appId !== undefined && appId !== String(STEAM_DEV_APP_ID)) {
+    throw new ConfigError(
+      'MR_STEAM_APP_ID',
+      `${profile} checks Steam only as app ${STEAM_DEV_APP_ID}, written exactly so`,
+    );
+  }
+  if (appId === undefined) {
+    if (set.has('MR_STEAM_WEB_API_KEY')) {
+      throw new ConfigError(
+        'MR_STEAM_WEB_API_KEY',
+        `a Web API key is used only with MR_STEAM_APP_ID=${STEAM_DEV_APP_ID}`,
+      );
+    }
+    return {};
+  }
+  return { steam: { appId: STEAM_DEV_APP_ID } };
+}
+
+/**
+ * The production profile's Steam settings: the game's own app id, checked with the publisher key
+ * (`MR_STEAM_PUBLISHER_KEY`, which only `steam/webApi.ts` reads). Never 480: nobody owns the
+ * game by owning Valve's development app.
+ */
+function productionSteam(set: ReadonlyMap<string, string>): { readonly steam?: SteamConfig } {
+  if (set.has('MR_STEAM_WEB_API_KEY')) {
+    throw new ConfigError(
+      'MR_STEAM_WEB_API_KEY',
+      'the production profile checks Steam with its publisher key, MR_STEAM_PUBLISHER_KEY',
+    );
+  }
+  const value = set.get('MR_STEAM_APP_ID');
+  if (value === undefined) return {};
+  const appId = APP_ID.test(value) ? Number(value) : Number.NaN;
+  if (!(appId <= MAX_APP_ID)) {
+    throw new ConfigError(
+      'MR_STEAM_APP_ID',
+      `must be a Steam app id: a decimal number from 1 to ${MAX_APP_ID}`,
+    );
+  }
+  if (appId === STEAM_DEV_APP_ID) {
+    throw new ConfigError(
+      'MR_STEAM_APP_ID',
+      `app ${STEAM_DEV_APP_ID} is Valve's development app; the production profile takes the game's own`,
+    );
+  }
+  return { steam: { appId } };
 }
 
 function isProfile(value: string | undefined): value is Profile {
