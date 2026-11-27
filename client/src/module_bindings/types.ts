@@ -659,6 +659,13 @@ export const HitEffectiveness = __t.enum("HitEffectiveness", {
 });
 export type HitEffectiveness = __Infer<typeof HitEffectiveness>;
 
+export const HostCheckSchedule = __t.object("HostCheckSchedule", {
+  scheduledId: __t.u64(),
+  scheduledAt: __t.scheduleAt(),
+  lastSuccessMs: __t.option(__t.i64()),
+});
+export type HostCheckSchedule = __Infer<typeof HostCheckSchedule>;
+
 export const Inventory = __t.object("Inventory", {
   invId: __t.u64(),
   ownerIdentity: __t.identity(),
@@ -1520,6 +1527,13 @@ export const WorldCheckBudget = __t.object("WorldCheckBudget", {
   redeems: __t.u32(),
 });
 export type WorldCheckBudget = __Infer<typeof WorldCheckBudget>;
+
+export const WorldEgress = __t.object("WorldEgress", {
+  family: __t.u8(),
+  address: __t.string(),
+  confirmedAtMs: __t.i64(),
+});
+export type WorldEgress = __Infer<typeof WorldEgress>;
 
 export const WorldMove = __t.object("WorldMove", {
   identity: __t.identity(),

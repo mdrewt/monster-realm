@@ -1456,6 +1456,7 @@ const EXPECTED_GATED: &[&str] = &[
     "request_bind_nonce_for",
     "request_data_export",
     "sell",
+    "set_host_identity",
     "set_move",
     "set_nickname",
     "set_party_slot",
@@ -1470,7 +1471,7 @@ const EXPECTED_GATED: &[&str] = &[
 /// Reducers that reach no classified write at all: the guest-claim start, the
 /// three retired legacy offer reducers, whose only statement is their fixed error,
 /// and the owner's two world-list setters, which write only the `NotOwned`
-/// `world_name` and `world_allowlist` tables.
+/// `world_name`, `world_allowlist` and `host_check_schedule` tables.
 const EXPECTED_NO_WRITES: &[&str] = &[
     "confirm_trade",
     "propose_trade",
@@ -1486,11 +1487,11 @@ const EXPECTED_NO_WRITES: &[&str] = &[
 /// `DATA_LIFECYCLE_MANIFEST`, so this only refuses a manifest that shrank.
 const CLASSIFIED_TABLE_FLOOR: usize = 47;
 
-/// Reducer floor for the real corpus: the 69 reducer attributes it carries
-/// (the five trade-session reducers and the eight world-binding reducers
-/// included), so the per-reducer verdict pin cannot be satisfied by an engine
-/// that finds almost none of them.
-const REDUCER_FLOOR: usize = 69;
+/// Reducer floor for the real corpus: the 70 reducer attributes it carries
+/// (the five trade-session reducers, the eight world-binding reducers and the
+/// owner's host-identity reducer included), so the per-reducer verdict pin cannot
+/// be satisfied by an engine that finds almost none of them.
+const REDUCER_FLOOR: usize = 70;
 
 // ---------------------------------------------------------------------------
 // Pure comparison helpers (test-side, never part of the engine)
@@ -1814,8 +1815,8 @@ fn real_crate_matches_the_reducer_rosters_with_no_dev_tactical_start_bt16_1() {
     );
     let procedures_n = attrs_with(PROCEDURE_ATTR_HEAD);
     assert_eq!(
-        procedures_n, 3,
-        "the corpus carries the three procedure attributes"
+        procedures_n, 4,
+        "the corpus carries the four procedure attributes"
     );
     assert_eq!(
         report.verdicts.len(),
@@ -2005,11 +2006,13 @@ fn a_procedures_verdict_holds_every_classified_table_its_body_reaches_lpw23_9() 
 }
 
 /// Over the real crate with every manifest table classified: the procedures are exactly
-/// `check_account`, `check_account_for` and `recheck_account`. The first two write
-/// `world_account`, `world_check_budget` and `world_allowlist`, the redeem's own `world_move`
-/// and `recheck_schedule`, the source's withdrawn admission (`access::withdraw_admission`:
-/// `world_admission`, so a move admits nobody), and every table the character move reaches;
-/// the re-check writes exactly `world_account` and `world_allowlist`.
+/// `check_account`, `check_account_for`, `recheck_account` and `host_account_check`. The first
+/// two write `world_account`, `world_check_budget` and `world_allowlist`, the answer's
+/// `world_egress`, the redeem's own `world_move` and `recheck_schedule`, the source's withdrawn
+/// admission (`access::withdraw_admission`: `world_admission`, so a move admits nobody), and
+/// every table the character move reaches; the re-check writes exactly `world_account`,
+/// `world_allowlist` and `world_egress`; the host's own check writes exactly those three and
+/// `host_check_schedule`.
 ///
 /// The move's tables, per callee of `accounts::move_character`, each followed through every
 /// crate fn it calls:
@@ -2034,8 +2037,10 @@ fn a_procedures_verdict_holds_every_classified_table_its_body_reaches_lpw23_9() 
 ///   `arm_export_bundle_reaper`: `export_bundle_reaper_schedule`.
 ///
 /// kills: a procedure declared anywhere else or under another name; a procedure writing a
-/// table outside its named set; the budget charged by the re-check; a redeem that moves no
-/// character, or moves it through a primitive reaching a table the move must not write.
+/// table outside its named set; the budget charged by the re-check or the host's check; a
+/// check that stores no answered address; a host's check that never stamps its schedule row,
+/// or that writes `recheck_schedule`; a redeem that moves no character, or moves it through a
+/// primitive reaching a table the move must not write.
 #[test]
 fn the_real_crates_procedures_and_their_writes_are_pinned_lpw23_9() {
     let every_table: BTreeSet<&str> = crate::schema::DATA_LIFECYCLE_MANIFEST
@@ -2049,6 +2054,8 @@ fn the_real_crates_procedures_and_their_writes_are_pinned_lpw23_9() {
         "recheck_schedule",
         "world_move",
         "world_admission",
+        "world_egress",
+        "host_check_schedule",
     ] {
         assert!(
             every_table.contains(table),
@@ -2061,9 +2068,14 @@ fn the_real_crates_procedures_and_their_writes_are_pinned_lpw23_9() {
     let procedures = report.names_with(|v| matches!(v, census::Verdict::Procedure { .. }));
     assert_eq!(
         procedures,
-        ["check_account", "check_account_for", "recheck_account"]
-            .into_iter()
-            .collect::<BTreeSet<&str>>(),
+        [
+            "check_account",
+            "check_account_for",
+            "recheck_account",
+            "host_account_check",
+        ]
+        .into_iter()
+        .collect::<BTreeSet<&str>>(),
         "the procedure roster"
     );
     let writes = |tables: &[&str]| census::Verdict::Procedure {
@@ -2073,6 +2085,8 @@ fn the_real_crates_procedures_and_their_writes_are_pinned_lpw23_9() {
         "world_account",
         "world_allowlist",
         "world_check_budget",
+        // The answer's address.
+        "world_egress",
         // The redeem: the source's move record, its disarmed re-check and its withdrawn
         // admission.
         "world_move",
@@ -2108,7 +2122,16 @@ fn the_real_crates_procedures_and_their_writes_are_pinned_lpw23_9() {
     assert_eq!(verdict_of(&report, "check_account_for"), &first_contact);
     assert_eq!(
         verdict_of(&report, "recheck_account"),
-        &writes(&["world_account", "world_allowlist"])
+        &writes(&["world_account", "world_allowlist", "world_egress"])
+    );
+    assert_eq!(
+        verdict_of(&report, "host_account_check"),
+        &writes(&[
+            "world_account",
+            "world_allowlist",
+            "world_egress",
+            "host_check_schedule",
+        ])
     );
 }
 
@@ -2485,6 +2508,95 @@ fn world_move_is_private_and_my_world_move_is_its_one_read_path_lpw42_6() {
     }
 }
 
+/// The generated module definition's access for `table`, and the views whose row is `table`'s
+/// row type or a look-alike row carrying `marker` (a column only that row has). A control
+/// table, `world_move`, read the same way finds `my_world_move`, so an empty answer is the
+/// module's and never a scan that sees no view.
+fn host_check_table_access_and_views(
+    table: &str,
+    marker: &str,
+) -> (
+    spacetimedb::spacetimedb_lib::db::raw_def::v9::TableAccess,
+    Vec<String>,
+) {
+    use spacetimedb::spacetimedb_lib::db::raw_def::v9::TableAccess;
+    let fx = crate::native_host_tests::fixture();
+    let def = fx.module_def();
+    let tables = def.tables().unwrap_or_else(|| {
+        panic!("[host-check/describe-tables] the generated module def carries no Tables section")
+    });
+    let ts = def.typespace().unwrap_or_else(|| {
+        panic!("[host-check/describe-typespace] the generated module def carries no typespace")
+    });
+    let views = def.views().unwrap_or_else(|| {
+        panic!("[host-check/describe-views] the generated module def carries no Views section")
+    });
+    let views_over = |name: &str, marker: &str| -> (TableAccess, Vec<String>) {
+        let Some(t) = tables.iter().find(|t| &*t.source_name == name) else {
+            panic!("[host-check/table-missing] `{name}` is not a generated table")
+        };
+        let mut over: Vec<String> = Vec::new();
+        for v in views {
+            let view = v.source_name.to_string();
+            let (row_ref, columns) = ts2_view_row(ts, &v.return_type, &view);
+            if row_ref == Some(t.product_type_ref) || columns.iter().any(|c| c == marker) {
+                over.push(view);
+            }
+        }
+        (t.table_access, over)
+    };
+    let (_, control) = views_over("world_move", "moved_at_ms");
+    assert_eq!(
+        control,
+        ["my_world_move"],
+        "fixture: the view scan finds `my_world_move` over the `world_move` row"
+    );
+    views_over(table, marker)
+}
+
+/// In the generated module definition `world_egress` (the address the account service last saw
+/// the world's requests leave from, per family) is PRIVATE, and no view returns its row, by its
+/// own row type or by a look-alike row carrying `confirmed_at_ms`.
+///
+/// kills: `public` on `world_egress` (every client would read the world's own network address);
+/// a view over its rows.
+#[test]
+fn world_egress_is_private_and_no_view_returns_its_row_lpw43_5() {
+    use spacetimedb::spacetimedb_lib::db::raw_def::v9::TableAccess;
+    let (access, views) = host_check_table_access_and_views("world_egress", "confirmed_at_ms");
+    assert_eq!(
+        access,
+        TableAccess::Private,
+        "[host-check/table-private] `world_egress` must be PRIVATE"
+    );
+    assert!(
+        views.is_empty(),
+        "[host-check/no-view] views returning `world_egress` rows: {views:?}"
+    );
+}
+
+/// In the generated module definition `host_check_schedule` (the tick of the host account's own
+/// check and when it last succeeded) is PRIVATE, and no view returns its row, by its own row
+/// type or by a look-alike row carrying `last_success_ms`.
+///
+/// kills: `public` on `host_check_schedule` (every client would read when the host's account
+/// was last confirmed); a view over its rows.
+#[test]
+fn host_check_schedule_is_private_and_no_view_returns_its_row_lpw43_2() {
+    use spacetimedb::spacetimedb_lib::db::raw_def::v9::TableAccess;
+    let (access, views) =
+        host_check_table_access_and_views("host_check_schedule", "last_success_ms");
+    assert_eq!(
+        access,
+        TableAccess::Private,
+        "[host-check/table-private] `host_check_schedule` must be PRIVATE"
+    );
+    assert!(
+        views.is_empty(),
+        "[host-check/no-view] views returning `host_check_schedule` rows: {views:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The admission roster (local-play design A1): every client-callable reducer makes the
 // admission check before anything else, except the owner-only reducers, which answer
@@ -2657,6 +2769,9 @@ mod admission_roster {
                 crate::trading::respond_trade(ctx, 0, false)
             }),
             probe("sell", Player, |ctx| crate::economy::sell(ctx, 0, 0)),
+            probe("set_host_identity", OwnerOnly, |ctx| {
+                crate::account_checks::set_host_identity(ctx, nobody())
+            }),
             probe("set_move", Player, |ctx| {
                 crate::movement::set_move(ctx, game_core::MoveInput::Jump, 0)
             }),
@@ -2863,11 +2978,12 @@ mod admission_roster {
         );
         assert_eq!(
             generated.len(),
-            50,
+            51,
             "the generated roster: 41 reducers before lpw-9 plus `set_world_access`, plus the \
              eight world-binding reducers (`request_bind_nonce`, `request_bind_nonce_for`, \
              `bind_world_account`, `bind_world_account_for`, `set_world_names`, \
-             `set_world_allowlist`, `unbind_world_account`, `drop_world_binding`)"
+             `set_world_allowlist`, `unbind_world_account`, `drop_world_binding`), plus the \
+             owner's `set_host_identity`"
         );
     }
 
@@ -2955,9 +3071,10 @@ mod admission_roster {
         );
     }
 
-    /// The owner-only set is exactly `sync_content`, `set_world_access` and the five owner-only
-    /// world-binding reducers (`request_bind_nonce_for`, `bind_world_account_for`,
-    /// `drop_world_binding`, `set_world_names`, `set_world_allowlist`); each,
+    /// The owner-only set is exactly `sync_content`, `set_world_access`, `set_host_identity` and
+    /// the five owner-only world-binding reducers (`request_bind_nonce_for`,
+    /// `bind_world_account_for`, `drop_world_binding`, `set_world_names`,
+    /// `set_world_allowlist`); each,
     /// called by an unadmitted non-owner on a `Password` world, answers its OWN owner refusal
     /// (never the admission check's), with no write. `sync_content`'s refusal is read from the
     /// same caller on the same world with no access row, where no admission check can apply.
@@ -2978,6 +3095,7 @@ mod admission_roster {
                 "bind_world_account_for",
                 "drop_world_binding",
                 "request_bind_nonce_for",
+                "set_host_identity",
                 "set_world_access",
                 "set_world_allowlist",
                 "set_world_names",
@@ -3180,6 +3298,7 @@ mod reducer_arguments {
         declare_reducer!(d, CLIENT, crate::privacy::request_data_export);
         declare_reducer!(d, CLIENT, crate::trading::respond_trade);
         declare_reducer!(d, CLIENT, crate::economy::sell);
+        declare_reducer!(d, CLIENT, crate::account_checks::set_host_identity);
         declare_reducer!(d, CLIENT, crate::movement::set_move);
         declare_reducer!(d, CLIENT, crate::monster_mgmt::set_nickname);
         declare_reducer!(d, CLIENT, crate::monster_mgmt::set_party_slot);
@@ -3249,10 +3368,12 @@ mod reducer_arguments {
         .expect("the real corpus must census cleanly");
         let procedures =
             report.names_with(|v| matches!(v, super::census::Verdict::Procedure { .. }));
-        assert!(
-            procedures.contains("recheck_account"),
-            "fixture: the census reads the scheduled procedure as a procedure"
-        );
+        for procedure in ["recheck_account", "host_account_check"] {
+            assert!(
+                procedures.contains(procedure),
+                "fixture: the census reads the scheduled procedure `{procedure}` as a procedure"
+            );
+        }
         let fx = fixture();
         let native = fx.module_def();
         let scheduled: BTreeSet<String> = native

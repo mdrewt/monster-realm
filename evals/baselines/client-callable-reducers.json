@@ -119,6 +119,9 @@
       "item_id: u32()",
       "qty: u32()"
     ],
+    "set_host_identity": [
+      "who: identity()"
+    ],
     "set_move": [
       "input: MoveInput",
       "seq: u64()"

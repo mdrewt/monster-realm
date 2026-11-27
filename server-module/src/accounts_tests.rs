@@ -975,6 +975,7 @@ fn data_lifecycle_partition_matches_spec_section3() {
         "guest_claim",
         "guest_claim_reaper_schedule",
         "heal_location_row",
+        "host_check_schedule",
         "item_row",
         "module_info",
         "movement_tick_schedule",
@@ -989,19 +990,23 @@ fn data_lifecycle_partition_matches_spec_section3() {
         "world_access",
         "world_allowlist",
         "world_check_budget",
+        "world_egress",
         "world_name",
         "zone_def",
     ];
     assert_eq!(
         not_owned, expected_not_owned,
-        "T2 / spec §3 NOT-OWNED: exactly twenty-five tables hold no per-player data — spec §3's \
+        "T2 / spec §3 NOT-OWNED: exactly twenty-seven tables hold no per-player data — spec §3's \
          seventeen, rb-24's `account_deletion_reaper_schedule`, rb-48's \
          `export_bundle_reaper_schedule` (ADR-0238), sr-7's `battle_summary_reaper_schedule`, \
          lpw-3's `module_info`, lpw-9's `world_access` (the one global access-rule row), \
          `world_name` and `world_allowlist` (the world's own names and the host's list of \
          handles, neither with an Identity column; the deletion cascade removes a deleted \
-         identity's own handle from the list), and `world_check_budget` (one row counting \
-         the redeems sent this minute). The additions are bookkeeping rather than player data, and \
+         identity's own handle from the list), `world_check_budget` (one row counting \
+         the redeems sent this minute), `world_egress` (the address the account service last \
+         saw the world's requests leave from, one row per family) and `host_check_schedule` \
+         (the tick of the host account's own check and when it last succeeded), neither of \
+         the last two with an Identity column. The additions are bookkeeping rather than player data, and \
          none is keyed by an identity a per-owner cascade step looks up: the rb-24 row holds the identity whose \
          own cascade it runs, and the rb-48 and sr-7 schedule rows and lpw-3's protocol-number \
          row are each ONE GLOBAL row with no Identity column at all, so there is nothing for a \
@@ -3198,6 +3203,14 @@ fn m22s6_table_row_types() -> Vec<(&'static str, AlgebraicType)> {
             <crate::account_checks::WorldMove as SpacetimeType>::make_type(&mut ts),
         ),
         (
+            "world_egress",
+            <crate::account_checks::WorldEgress as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "host_check_schedule",
+            <crate::account_checks::HostCheckSchedule as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
             "zone_def",
             <crate::schema::ZoneDefRow as SpacetimeType>::make_type(&mut ts),
         ),
@@ -3236,7 +3249,7 @@ fn m22s6_identity_column_count(accessor: &str, ty: &AlgebraicType) -> usize {
 
 /// the S6 row-type registry and `DATA_LIFECYCLE_MANIFEST`
 /// name the SAME set of tables, with no duplicates on either side, the census
-/// pinned at 73, and a non-vacuity floor on how many of the 73 are identity-bearing.
+/// pinned at 75, and a non-vacuity floor on how many of the 75 are identity-bearing.
 ///
 /// This is DISTINCT from `data_lifecycle_manifest_totality_bidirectional`,
 /// which proves every LIVE TABLE has a manifest entry by scanning table-attribute
@@ -3297,9 +3310,9 @@ fn m22s6_table_row_registry_matches_manifest() {
 
     let registry_len = registry.len();
     assert_eq!(
-        registry_len, 73,
+        registry_len, 75,
         "[m22s6/registry-census] the S6 row-type registry has {registry_len} entries; the live \
-         manifest carries exactly 73 (29 ERASE + 6 ANONYMIZE + 13 JOIN-ONLY + 25 NOT-OWNED) — \
+         manifest carries exactly 75 (29 ERASE + 6 ANONYMIZE + 13 JOIN-ONLY + 27 NOT-OWNED) — \
          37 base tables, plus `export_bundle_reaper_schedule` (ADR-0238), plus rb-73's \
          `player_session` (ADR-0245), plus 20r-d's `pending_evolution_notice` (ADR-0254), plus \
          bt-7's ten tactical tables, plus bt-8's three tactical schedule tables, plus the three \
@@ -3312,7 +3325,10 @@ fn m22s6_table_row_registry_matches_manifest() {
          `world_allowlist`), plus the three account-check tables (`world_account`, each \
          identity's checked account; `recheck_schedule`, each identity's armed re-check; \
          `world_check_budget`, the current minute's ticket-redeem count), plus `world_move` \
-         (each identity a character was moved away from). A registry that grew \
+         (each identity a character was moved away from), plus the host-check tables \
+         (`world_egress`, the address the account service last saw the world's requests \
+         leave from, per family; `host_check_schedule`, the tick of the host account's own \
+         check and when it last succeeded). A registry that grew \
          or shrank without a matching manifest change is \
          a registry nobody reviewed against the schema it claims to cover."
     );
@@ -3325,10 +3341,12 @@ fn m22s6_table_row_registry_matches_manifest() {
     }
     assert_eq!(
         identity_bearing, 39,
-        "[m22s6/registry-identity-floor] {identity_bearing} of the 73 registered row types \
+        "[m22s6/registry-identity-floor] {identity_bearing} of the 75 registered row types \
          carry an Identity column at some depth; exactly 39 is the live count (the 35 \
          cascade-classified owner-keyed tables R1 below re-derives, plus the 4 frozen NotOwned \
-         exceptions R3 below names). `world_move` adds one (its `identity` key). \
+         exceptions R3 below names). `world_egress` and `host_check_schedule` add none (a \
+         family, an address text and a time; a schedule id, its tick and the last success). \
+         `world_move` adds one (its `identity` key). \
          `world_account` and `recheck_schedule` add one each \
          (their `identity` columns, the keys their Erase classification rests on); \
          `world_check_budget` adds none (a row id, a minute and a count). `world_binding` and `world_bind_nonce` add one each \
@@ -3610,14 +3628,16 @@ fn m22s6_not_owned_identity_exceptions_are_frozen() {
     }
 
     assert_eq!(
-        population, 25,
+        population, 27,
         "[m22s6/x3-population] {population} manifest entries are classified NotOwned; the live \
-         set is exactly 25 (spec §3's seventeen plus rb-24's account_deletion_reaper_schedule, \
+         set is exactly 27 (spec §3's seventeen plus rb-24's account_deletion_reaper_schedule, \
          rb-48's export_bundle_reaper_schedule, ADR-0238, sr-7's \
          battle_summary_reaper_schedule, lpw-3's module_info, lpw-9's world_access, \
-         world_name and world_allowlist, the world's names and the host's account list, and \
-         world_check_budget, one row counting the current minute's ticket redeems with no \
-         Identity column)."
+         world_name and world_allowlist, the world's names and the host's account list, \
+         world_check_budget, one row counting the current minute's ticket redeems, \
+         world_egress, the address the account service last saw the world's requests leave \
+         from, per family, and host_check_schedule, the tick of the host account's own check \
+         and when it last succeeded, the last three with no Identity column)."
     );
 
     let observed_len = observed_exceptions.len();
@@ -5151,14 +5171,17 @@ fn tactical_manifest_entries_are_classified_and_only_summary_and_formation_expor
     );
     assert_eq!(
         DATA_LIFECYCLE_MANIFEST.len(),
-        73,
+        75,
         "[bt7/manifest-census] 40 pre-bt-7 entries plus the ten tactical tables plus bt-8's three \
          schedule tables plus the three trade-session tables plus move_intent plus last_position \
          plus player_handle plus battle_summary_reaper_schedule plus leaderboard_top plus \
          module_info plus lpw-9's world_access, world_admission and world_admission_attempt \
          plus the four world binding tables (world_binding, world_bind_nonce, world_name, \
          world_allowlist) plus the three account-check tables (world_account, \
-         world_check_budget, recheck_schedule) plus world_move"
+         world_check_budget, recheck_schedule) plus world_move plus the two host-check \
+         tables (world_egress, the address the account service last saw the world's requests \
+         leave from, per family; host_check_schedule, the tick of the host account's own \
+         check and when it last succeeded)"
     );
 }
 
@@ -11278,14 +11301,17 @@ mod acct_nh {
         );
         assert_eq!(
             generated.len(),
-            73,
+            75,
             "[bt7/manifest-totality-census] 40 pre-bt-7 tables plus the ten tactical tables plus \
              bt-8's three schedule tables plus the three trade-session tables plus move_intent \
              plus last_position plus player_handle plus battle_summary_reaper_schedule plus \
              leaderboard_top plus module_info plus lpw-9's world_access, world_admission and \
              world_admission_attempt plus the four world binding tables (world_binding, \
              world_bind_nonce, world_name, world_allowlist) plus the three account-check tables \
-             (world_account, world_check_budget, recheck_schedule) plus world_move"
+             (world_account, world_check_budget, recheck_schedule) plus world_move plus the two \
+             host-check tables (world_egress, the address the account service last saw the \
+             world's requests leave from, per family; host_check_schedule, the tick of the host \
+             account's own check and when it last succeeded)"
         );
         for table in [
             "battle_tactical",

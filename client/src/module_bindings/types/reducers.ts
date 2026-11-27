@@ -42,6 +42,7 @@ import RequestBindNonceForReducer from "../request_bind_nonce_for_reducer";
 import RequestDataExportReducer from "../request_data_export_reducer";
 import RespondTradeReducer from "../respond_trade_reducer";
 import SellReducer from "../sell_reducer";
+import SetHostIdentityReducer from "../set_host_identity_reducer";
 import SetMoveReducer from "../set_move_reducer";
 import SetNicknameReducer from "../set_nickname_reducer";
 import SetPartySlotReducer from "../set_party_slot_reducer";
@@ -93,6 +94,7 @@ export type RequestBindNonceForParams = __Infer<typeof RequestBindNonceForReduce
 export type RequestDataExportParams = __Infer<typeof RequestDataExportReducer>;
 export type RespondTradeParams = __Infer<typeof RespondTradeReducer>;
 export type SellParams = __Infer<typeof SellReducer>;
+export type SetHostIdentityParams = __Infer<typeof SetHostIdentityReducer>;
 export type SetMoveParams = __Infer<typeof SetMoveReducer>;
 export type SetNicknameParams = __Infer<typeof SetNicknameReducer>;
 export type SetPartySlotParams = __Infer<typeof SetPartySlotReducer>;

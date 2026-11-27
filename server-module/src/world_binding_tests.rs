@@ -22,7 +22,7 @@ use super::{
     REJECT_DUPLICATE_ENTRY, REJECT_NO_BIND_NONCE, REJECT_TOO_MANY_ALLOWLIST_ACCOUNTS,
     REJECT_TOO_MANY_WORLD_NAMES, REJECT_WORLD_NAME, WORLD_NAME_MAX_BYTES,
 };
-use crate::account_checks::{RecheckSchedule, WorldAccount};
+use crate::account_checks::{HostCheckSchedule, RecheckSchedule, WorldAccount};
 use crate::accounts::{
     build_profile, AttestationKey, BuildFeatures, BuildProfile, DEV_ATTESTATION_KEYS,
     DEV_LOGIN_ISSUERS, PRODUCTION_ATTESTATION_KEYS,
@@ -363,13 +363,20 @@ fn recheck_row(who: Identity, n: u64) -> RecheckSchedule {
 /// `world_access`, `world_admission` and `account` are read-only here: a write to one aborts
 /// the test. The nonce table is registered on its `expires_at_ms` index too, so the sweep's
 /// range read finds rows; the name and allowlist tables are scannable so a setter can replace
-/// the whole set.
+/// the whole set; the tick table of the host's own check is scannable and read-only, so a
+/// setter that changes the names can look for an armed row and a write to it aborts the test.
 fn world(fx: &Fixture) -> W<'_> {
     let _ = fx
         .table_keyed::<PlayerSession, ConnectionId>("player_session", "connection_id", |r| {
             r.connection_id
         })
         .unique();
+    let _ = fx
+        .table_keyed::<HostCheckSchedule, u64>("host_check_schedule", "scheduled_id", |r| {
+            r.scheduled_id
+        })
+        .unique()
+        .scannable();
     let _ = fx.table_keyed::<WorldBindNonce, i64>("world_bind_nonce", "expires_at_ms", |r| {
         r.expires_at_ms
     });
@@ -6132,5 +6139,286 @@ mod checked_accounts {
     /// [`bob`]'s binding as [`valid_world`] seeds it.
     fn bob_binding_view() -> BindingView {
         bview(bob(), OTHER_SUB, T0 - 5_000, true, dev_kid())
+    }
+}
+
+// =====================================================================================
+// A change of the world's names makes the host's own check due at its next tick.
+// =====================================================================================
+
+mod names_reset_the_host_check {
+    use super::*;
+    use spacetimedb::{ScheduleAt, TimeDuration};
+
+    const NAME_A: &str = "spki:alpha-fingerprint/realm";
+    const NAME_B: &str = "dns:realm.example.org/realm";
+    const NAME_C: &str = "spki:gamma-fingerprint/realm";
+    /// The seeded rows' ids: far above the 1, 2, ... the host's sequence hands out.
+    const SEEDED_ID: u64 = 900;
+    const SECOND_ID: u64 = 901;
+    /// When the seeded row's check last succeeded: two hours before the call.
+    const STAMP: i64 = T0 - 7_200_000;
+
+    type ScheduleView = (u64, ScheduleAt, Option<i64>);
+
+    /// The armed interval: one hour.
+    fn hourly() -> ScheduleAt {
+        ScheduleAt::Interval(TimeDuration::from_micros(3_600_000_000))
+    }
+
+    fn tick_row(scheduled_id: u64, last_success_ms: Option<i64>) -> HostCheckSchedule {
+        HostCheckSchedule {
+            scheduled_id,
+            scheduled_at: hourly(),
+            last_success_ms,
+        }
+    }
+
+    /// `host_check_schedule` registered as the reset uses it: scanned, deleted by
+    /// `scheduled_id`, inserted with the id drawn from a sequence. No row is armed.
+    fn schedule_table(fx: &Fixture) -> Handle<'_, HostCheckSchedule, u64> {
+        fx.table_keyed::<HostCheckSchedule, u64>("host_check_schedule", "scheduled_id", |r| {
+            r.scheduled_id
+        })
+        .unique()
+        .writable()
+        .scannable()
+        .auto_inc(|r| r.scheduled_id, |r, v| r.scheduled_id = v)
+    }
+
+    /// [`owned_world`] named [`NAME_A`] and [`NAME_B`], with [`schedule_table`] registered.
+    fn named_world(fx: &Fixture) -> (W<'_>, Handle<'_, HostCheckSchedule, u64>) {
+        let w = owned_world(fx);
+        let ticks = schedule_table(fx);
+        seed_names(&w, &[NAME_A, NAME_B]);
+        (w, ticks)
+    }
+
+    /// [`named_world`] with one row armed whose check succeeded at [`STAMP`].
+    fn stamped_world(fx: &Fixture) -> (W<'_>, Handle<'_, HostCheckSchedule, u64>) {
+        let (w, ticks) = named_world(fx);
+        ticks.seed(&tick_row(SEEDED_ID, Some(STAMP)));
+        (w, ticks)
+    }
+
+    fn ticks_of(ticks: &Handle<'_, HostCheckSchedule, u64>) -> Vec<ScheduleView> {
+        let mut rows: Vec<ScheduleView> = ticks
+            .rows()
+            .into_iter()
+            .map(|r| (r.scheduled_id, r.scheduled_at, r.last_success_ms))
+            .collect();
+        rows.sort_by_key(|r| r.0);
+        rows
+    }
+
+    /// The table holds exactly one row, never stamped, armed hourly, under an id no seeded row
+    /// carried.
+    fn assert_reset(ticks: &Handle<'_, HostCheckSchedule, u64>, seeded: &[u64], label: &str) {
+        let rows = ticks_of(ticks);
+        assert_eq!(rows.len(), 1, "{label}: one row in total, got {rows:?}");
+        let (scheduled_id, scheduled_at, last_success_ms) =
+            rows.into_iter().next().expect("one row");
+        assert_eq!(last_success_ms, None, "{label}: the stamp is cleared");
+        assert_eq!(scheduled_at, hourly(), "{label}: armed hourly");
+        assert!(
+            !seeded.contains(&scheduled_id),
+            "{label}: a fresh row, not a seeded one updated (id {scheduled_id})"
+        );
+    }
+
+    fn assert_kept(fx: &Fixture, ticks: &Handle<'_, HostCheckSchedule, u64>, want: ScheduleView) {
+        assert_eq!(
+            ticks_of(ticks),
+            vec![want],
+            "the armed row is kept as seeded"
+        );
+        assert_eq!(
+            fx.writes_to("host_check_schedule"),
+            0,
+            "no write to host_check_schedule"
+        );
+    }
+
+    /// A different set clears the stamp: the stamped row goes and one unstamped hourly row
+    /// is armed in its place; the names are stored.
+    ///
+    /// kills: `set_world_names` never telling the check; the stamp updated in place; a second
+    /// row inserted beside the stamped one; the reset armed with another interval.
+    #[test]
+    fn a_changed_set_replaces_the_stamped_row_with_an_unstamped_one_lpw43_2() {
+        let fx = fixture();
+        let (w, ticks) = stamped_world(&fx);
+        assert_eq!(set_names(&fx, owner(), strings(&[NAME_A, NAME_C])), Ok(()));
+        assert_reset(&ticks, &[SEEDED_ID], "a name replaced");
+        assert_eq!(names(&w), sorted(strings(&[NAME_A, NAME_C])));
+    }
+
+    /// Each kind of difference between the stored set and the stored-to-be set counts: a name
+    /// added, removed, replaced, and the list emptied.
+    ///
+    /// kills: sets compared by length alone; a subset or superset taken for the same set; an
+    /// empty list skipped.
+    #[test]
+    fn every_kind_of_difference_resets_the_check_lpw43_2() {
+        for (label, list) in [
+            ("a name added", vec![NAME_A, NAME_B, NAME_C]),
+            ("a name removed", vec![NAME_B]),
+            ("a name replaced", vec![NAME_C, NAME_B]),
+            ("the list emptied", vec![]),
+        ] {
+            let fx = fixture();
+            let (w, ticks) = stamped_world(&fx);
+            assert_eq!(set_names(&fx, owner(), strings(&list)), Ok(()), "{label}");
+            assert_reset(&ticks, &[SEEDED_ID], label);
+            assert_eq!(
+                names(&w),
+                sorted(strings(&list)),
+                "{label}: the names stored"
+            );
+        }
+    }
+
+    /// The same names in another order, the same order, or none over none are no change: the
+    /// stamped row is kept unwritten. The same fixture given a different set is then reset.
+    ///
+    /// kills: the stored list compared in order; every call taken for a change; an empty set
+    /// over an empty set taken for a change.
+    #[test]
+    fn the_same_set_keeps_the_stamp_lpw43_2() {
+        for (label, stored, list) in [
+            ("another order", vec![NAME_A, NAME_B], vec![NAME_B, NAME_A]),
+            ("the same order", vec![NAME_A, NAME_B], vec![NAME_A, NAME_B]),
+            ("none over none", vec![], vec![]),
+        ] {
+            let fx = fixture();
+            let w = owned_world(&fx);
+            let ticks = schedule_table(&fx);
+            seed_names(&w, &stored);
+            ticks.seed(&tick_row(SEEDED_ID, Some(STAMP)));
+            fx.reset_writes();
+            assert_eq!(set_names(&fx, owner(), strings(&list)), Ok(()), "{label}");
+            assert_kept(&fx, &ticks, (SEEDED_ID, hourly(), Some(STAMP)));
+            assert_eq!(
+                names(&w),
+                sorted(strings(&list)),
+                "{label}: the names stored"
+            );
+
+            assert_eq!(set_names(&fx, owner(), strings(&[NAME_C])), Ok(()));
+            assert_reset(&ticks, &[SEEDED_ID], &format!("{label}, then a change"));
+        }
+    }
+
+    /// With no row armed a change writes nothing to `host_check_schedule` and the names are
+    /// stored; a row armed afterwards is reset by the next change.
+    ///
+    /// kills: the reset arming a row where the host never armed one.
+    #[test]
+    fn a_change_with_no_row_armed_arms_nothing_lpw43_2() {
+        let fx = fixture();
+        let (w, ticks) = named_world(&fx);
+        fx.reset_writes();
+        assert_eq!(set_names(&fx, owner(), strings(&[NAME_C])), Ok(()));
+        assert!(ticks_of(&ticks).is_empty(), "no row armed");
+        assert_eq!(fx.writes_to("host_check_schedule"), 0, "no write");
+        assert_eq!(names(&w), strings(&[NAME_C]), "the names stored");
+
+        ticks.seed(&tick_row(SEEDED_ID, Some(STAMP)));
+        assert_eq!(set_names(&fx, owner(), strings(&[NAME_A])), Ok(()));
+        assert_reset(&ticks, &[SEEDED_ID], "a row armed, then a change");
+    }
+
+    /// One unstamped row armed: a change keeps it unwritten, under its own id.
+    ///
+    /// kills: the reset made whatever the row holds (a fresh id, a write per change).
+    #[test]
+    fn a_change_over_one_unstamped_row_keeps_it_lpw43_2() {
+        let fx = fixture();
+        let (w, ticks) = named_world(&fx);
+        ticks.seed(&tick_row(SEEDED_ID, None));
+        fx.reset_writes();
+        assert_eq!(set_names(&fx, owner(), strings(&[NAME_C])), Ok(()));
+        assert_kept(&fx, &ticks, (SEEDED_ID, hourly(), None));
+        assert_eq!(names(&w), strings(&[NAME_C]), "the names stored");
+    }
+
+    /// Two rows armed and a change: one unstamped row remains, whatever the two held.
+    ///
+    /// kills: only the first row deleted; any unstamped row taken for "nothing to do"; the
+    /// reset keyed on the stamp of one row.
+    #[test]
+    fn a_change_over_two_rows_leaves_one_unstamped_row_lpw43_2() {
+        for (label, first, second) in [
+            ("one stamped, one not", Some(STAMP), None),
+            ("both unstamped", None, None),
+            ("both stamped", Some(STAMP), Some(STAMP + 1)),
+        ] {
+            let fx = fixture();
+            let (_w, ticks) = named_world(&fx);
+            ticks.seed(&tick_row(SEEDED_ID, first));
+            ticks.seed(&tick_row(SECOND_ID, second));
+            assert_eq!(
+                set_names(&fx, owner(), strings(&[NAME_C])),
+                Ok(()),
+                "{label}"
+            );
+            assert_reset(&ticks, &[SEEDED_ID, SECOND_ID], label);
+        }
+    }
+
+    /// Every registered table, `host_check_schedule` included, with each one's write count.
+    fn everything(
+        fx: &Fixture,
+        w: &W<'_>,
+        ticks: &Handle<'_, HostCheckSchedule, u64>,
+    ) -> Footprint {
+        let mut all = footprint(fx, w);
+        all.push((
+            "host_check_schedule",
+            encs(&ticks.rows()),
+            fx.writes_to("host_check_schedule"),
+        ));
+        all
+    }
+
+    /// A refused call (a caller that is not the owner; a list with a repeated entry) leaves
+    /// every table, the stamped row included, as seeded and unwritten; the owner's valid call
+    /// on the same fixture then resets it.
+    ///
+    /// kills: the reset made before the owner check or before the list is validated.
+    #[test]
+    fn a_refused_call_leaves_the_stamp_lpw43_2() {
+        let fx = fixture();
+        let (w, ticks) = stamped_world(&fx);
+        for (label, caller, list, want) in [
+            (
+                "a caller that is not the owner",
+                alice(),
+                vec![NAME_C],
+                crate::access::REJECT_NOT_WORLD_OWNER,
+            ),
+            (
+                "a repeated entry",
+                owner(),
+                vec![NAME_C, NAME_A, NAME_C],
+                REJECT_DUPLICATE_ENTRY,
+            ),
+        ] {
+            fx.reset_writes();
+            let before = everything(&fx, &w, &ticks);
+            assert_eq!(
+                set_names(&fx, caller, strings(&list)),
+                Err(want.to_string()),
+                "{label}"
+            );
+            assert_eq!(
+                everything(&fx, &w, &ticks),
+                before,
+                "{label}: every table as seeded, and no write call"
+            );
+        }
+
+        assert_eq!(set_names(&fx, owner(), strings(&[NAME_C])), Ok(()));
+        assert_reset(&ticks, &[SEEDED_ID], "the owner's valid call");
     }
 }

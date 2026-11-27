@@ -1986,5 +1986,41 @@
     "unique": [],
     "indexes": [],
     "scheduled": null
+  },
+  "world_egress": {
+    "pk": "family",
+    "visibility": "private",
+    "columns": {
+      "family": "u8",
+      "address": "String",
+      "confirmed_at_ms": "i64"
+    },
+    "order": [
+      "family",
+      "address",
+      "confirmed_at_ms"
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [],
+    "scheduled": null
+  },
+  "host_check_schedule": {
+    "pk": "scheduled_id",
+    "visibility": "private",
+    "columns": {
+      "scheduled_id": "u64",
+      "scheduled_at": "ScheduleAt",
+      "last_success_ms": "Option<i64>"
+    },
+    "order": [
+      "scheduled_id",
+      "scheduled_at",
+      "last_success_ms"
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [],
+    "scheduled": "host_account_check"
   }
 }
