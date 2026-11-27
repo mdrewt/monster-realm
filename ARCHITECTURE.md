@@ -282,7 +282,15 @@ still hold a row from before keep ticking if occupied and disarm on their next t
 not.
 
 A tick drains at most one move per character through `game_core::apply_move`, moves NPCs
-with `npc_decide`, and rolls grass encounters. The tick is the only writer of
+with `npc_decide`, and rolls grass encounters. `apply_move` gives `MoveInput::Face` two arms: a
+character that does not face the direction turns to it on the same tile, `Idle`, with
+`move_started_at` stamped, and one that already faces it gets exactly the `Step` result, from the
+match arm the two share. `Face` is the last `MoveInput` variant, after `Jump`; game-core's flat-code
+helper `apply_move_coded` carries only `Step` and `Jump`, so `Face` crosses the wasm boundary on the
+serde path. A move that lands on a warp tile moves the character to the warp's destination in the
+same tick, `Idle` and with its queue cleared. The warp is skipped for a character whose player is in
+an ongoing battle and for a mover with no player row (`skip_warp` defaults to `true`), and the NPC
+wander step resolves no warp, so an NPC stays in its home zone. The tick is the only writer of
 `character.move_queue` and `character.acked_seq` in every build but the load-test one, where
 `dev_place_in_load_zone` also writes them as the warp arm does. The tick copies the private
 queue and seq onto the character row (`movement::publish_intent`) in the same update that
@@ -673,7 +681,12 @@ position (a row update on the same tile replaces the row and adds no snapshot), 
 character's last two position changes and whether it has turned in place since, and a
 per-character jitter estimate taken from the intervals between position changes.
 
-Reconnect uses exponential backoff from 1 s to 30 s (`prediction/reconnectPolicy.ts`).
+Reconnect uses exponential backoff from 1 s to 30 s (`prediction/reconnectPolicy.ts`, a pure
+state machine `net/connection.ts` drives). `attemptBuild` is the one caller of the build, so every
+build path starts an attempt there: the reconnect timer, the first boot, `reconnectNow` and
+`continueAnonymously`. The shared drop path (`handleDrop`) counts the drop of an attempt that never
+applied as that attempt's failure, and shows "connection lost" only on the connected-to-disconnected
+edge and never on a page the protocol check refused.
 The SpacetimeDB token for an anonymous identity is kept where the target's kind says
 (`tokenPersistenceFor` in `net/authToken.ts`). Toward an `official` or `test` server it is
 in per-tab `sessionStorage`, so an identity survives a reload but not closing the tab, and
@@ -733,10 +746,19 @@ player immediately:
 Held keys (`prediction/heldKeys.ts`) keep a most-recent-first stack of held
 directions. A press sends `Face` at once: a turn in place for a character that faces
 another way, a step for one that already faces the direction. The frame loop continues
-a hold with `Step` in the active direction only after it has been held 150 ms and only
-when the predictor has no outstanding steps and no sent input is still owed. OS
-key-repeat is ignored. A zone warp (`switchZone` in `main.ts`) rebuilds
-prediction state but keeps the held stack. The rebuilt predictor has forgotten an
+a hold with `Step` in the active direction only after it has been held 150 ms
+(`HOLD_COMMIT_MS`), only when the predictor has no outstanding steps and no sent input is still
+owed, and only while `movementGate()` in `main.ts` passes: `movementEnabled` (`ui/contextStack.ts`:
+the world base with no frame above it and the session gate open) and no world sheet open. A hold
+from another facing therefore turns, waits for the row that drains the `Face`, then walks. The
+reconcile listener re-sends the held direction behind the same checks after a server correction.
+Every push of a frame, and every change of base kind, clears the held set. The keyboard source
+drops OS key-repeat (`e.repeat`), and the router (`input/router.ts`) counts each D-pad button's
+holders across physical keys and synthesizes menu auto-repeat on an injected clock
+(`REPEAT_DELAY_MS` 350, then every `REPEAT_PERIOD_MS` 100); a repeated step clamps at an end
+where a fresh one wraps (`stepAxis` in `ui/nav.ts`). A zone
+warp (`switchZone` in `main.ts`) rebuilds prediction state but keeps the held stack; a reconnect
+(`resetPredictionState`) clears it. The rebuilt predictor has forgotten an
 input that was on the wire at the warp, so `prediction/owedInputs.ts` counts sent
 inputs outside the predictor: each stays owed until the own row's `acked_seq` covers
 it or its reducer call rejects, and a reconnect clears the set.
@@ -749,10 +771,14 @@ it or its reducer call rejects, and a reconnect clears the set.
   changes. It ignores the server's `move_started_at`, which is re-stamped every tick
   and would restart the slide.
 - `interpolation.ts` renders remote characters in the past between buffered
-  snapshots, with an adaptive delay, holding at the newest snapshot. A remote on a
+  snapshots, with an adaptive delay, holding at the newest snapshot. The delay is per character,
+  from the store's jitter estimate, which ignores intervals longer than `JITTER_IDLE_GAP_STEPS`
+  (3, `shared/interpConfig.ts`) steps, and is clamped between `INTERP_MIN_DELAY_STEPS` (0.5) and
+  `INTERP_MAX_DELAY_STEPS` (2.5) steps (`render/config.ts`). A remote on a
   straight walk is the exception: it is continued at most half a tile past its newest
-  tile, at the walk's own cadence. The file also has the slew that walks a drawn
-  position to its target one axis at a time, and a reduced-motion path.
+  tile, at the walk's own cadence. A gap of up to three steps between two steps of a walking
+  remote is crossed at the walk's pace, not held and then slid. The file also has the slew that
+  walks a drawn position to its target one axis at a time, and a reduced-motion path.
 - `renderResolver.ts` sends each character to the right one of those two and snaps
   the own character when the authoritative target is more than one tile away. For
   remotes it keeps each one's last drawn position and moves it toward the frame's
@@ -762,8 +788,11 @@ it or its reducer call rejects, and a reconnect clears the set.
   walkability in every frame.
 - `map.ts` parses the tile map once from the wasm `zone_map()` value; `camera.ts`
   follows the player and centres maps smaller than the viewport; `viewport.ts` picks
-  an integer device scale; `viewRegistry.ts` pools one sprite per entity and tears it
-  down on despawn.
+  an integer device scale aimed at `TARGET_VISIBLE_TILES` (11) on the shorter axis, never more
+  than `MAX_VISIBLE_TILES` (16) and at least `MIN_VISIBLE_TILES` (7) where the viewport allows
+  (`render/config.ts`), and its `appInitOptions` runs Pixi at
+  `resolution` = `devicePixelRatio` with `autoDensity`; `viewRegistry.ts` pools one sprite per
+  entity and tears it down on despawn.
 - `world.ts`, `characterView.ts`, `atlasAssets.ts` and `placeholderAssets.ts` are the
   Pixi shell. Tiles are drawn at `TILE_PX` (32). Characters draw from the hero atlas
   (`atlasAssets.ts`), and from `placeholderAssets.ts`'s monochrome shapes when the atlas
@@ -798,10 +827,11 @@ draw order (`client/src/render/world.ts:296-299`): terrain (`#bg`), ground decor
 `world.ts:302`). The world container is the stage's only child; the UI is DOM, outside
 the canvas.
 - Terrain (`#drawMap`, `world.ts:461`): `planChunks` bakes static tiles into
-  nearest-sampled chunk textures at resolution 1 (`world.ts:489`), which the integer
-  device scale upsamples, so a device-scale change re-bakes nothing. Animated water
-  stays as per-tile sprites whose texture changes only when the frame index changes. The
-  bake runs before the drawn terrain is torn down, so a failed bake leaves the previous
+  nearest-sampled chunk textures at resolution 1 (`world.ts:489`; the chunk cache in
+  `render/terrainLayout.ts` bakes with its `CHUNK_TEXTURE_OPTIONS`), which the integer device scale
+  upsamples, so a device-scale change re-bakes nothing; a WebGL context restore re-bakes them.
+  Animated water stays as per-tile sprites whose texture changes only when the frame index
+  changes. The bake runs before the drawn terrain is torn down, so a failed bake leaves the previous
   terrain on screen.
 - Decor (`#drawDecor`, `world.ts:521`): `layoutDecor` (`render/decorLayout.ts:56`)
   places a landmark per heal-location row and a warp marker per warp source tile, from the
