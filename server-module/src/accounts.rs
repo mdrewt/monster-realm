@@ -8,8 +8,11 @@
 //! `schema::rekey_formation`), `privacy::purge_export_bundles`, and the
 //! `erase_*` / `anonymize_*` cascade family the deletion reaper delegates to
 //! (the tactical tables' `schema::erase_tactical_rows` included). The guest
-//! claim delegates to two of that family, `schema::erase_tactical_rows` and
-//! `battle::anonymize_battles`, for the guest identity it retires. Bare reads of
+//! claim delegates to four of that family, `access::erase_admission`,
+//! `world_binding::erase_world_binding`, `schema::erase_tactical_rows` and
+//! `battle::anonymize_battles`, for the guest identity it retires. The reaper
+//! also calls `world_binding::delist_account_of`, which takes the deleted
+//! identity's bound account off the host's list. Bare reads of
 //! `player` are permitted (no single owning module); the wallet is not read
 //! here at all; battle liveness
 //! reuses `guards::is_in_ongoing_battle` rather than touching `ctx.db.battle()`.
@@ -1106,8 +1109,9 @@ pub fn start_guest_claim(ctx: &ReducerContext, code: String) -> Result<(), Strin
 }
 
 /// Complete a guest→account claim: re-key the guest's game data onto the caller,
-/// erase what stays behind under the retired guest identity (its export bundles
-/// and its finished battles), consume the code (single-use), stamp provenance
+/// erase what stays behind under the retired guest identity (its export bundles,
+/// its world admission, wrong-password record, binding and bind nonce, and its
+/// finished battles), consume the code (single-use), stamp provenance
 /// (AUTH-12..21, 26, 34, 35).
 ///
 /// Guard ordering: all caller-state checks (1–4) run BEFORE any code resolution
@@ -1464,7 +1468,9 @@ pub struct AccountDeletionReaperSchedule {
 /// below yanks rows out from under a live battle/trade resolution; 6b the
 /// delegated ERASE sweeps in manifest order (write isolation: every
 /// foreign-table write lives in its owning module, the `rekey_all`
-/// precedent), including the export-bundle purge; 6d `character` strictly
+/// precedent), including the export-bundle purge, and, ahead of the world
+/// binding's erase, the removal of the subject's bound account from the
+/// host's allowlist (`world_binding::delist_account_of`); 6d `character` strictly
 /// before 6c's player display-name tombstone (the spec's order pin — the join
 /// key is the live `player` row); the battle anonymize sweeps its own
 /// join-only children per row before each identity swap; then 6e — LAST, and
