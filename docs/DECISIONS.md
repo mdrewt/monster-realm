@@ -2304,6 +2304,36 @@ page. The choice stands on one thing nobody has measured: the Steam overlay draw
 on Windows. That is proved before anything else is built on the shell, and if the overlay cannot be made to
 draw, this entry is rewritten, not worked around.
 
+## The client reaches its host through ports cut where a second host needs one; a shell supplies them through one page global
+
+**Decision.** A capability the client takes from whatever hosts its page (a browser tab, or a desktop
+shell) has one owner in the client. Where a second host must provide it differently, the owner is a
+port: a module under `client/src/platform/` that exports plain functions and holds the browser's code as
+the default. Where every host provides the same web API, the owner stays a narrow structural type the
+real global satisfies (the storage hosts, the pad read, the key event, the media query, the window size)
+or a DOM registration `main.ts` or `connect` makes. A shell supplies a port's function through one page
+global, the shell bridge, set before the client module runs by the hook that sets the shell document; it
+holds functions only, and a verb it does not hold runs the browser's code. Every shell implements the
+same bridge, so one bundle runs in a tab, in Electron and in Tauri. The first port is the hand-off to
+the operating system: open an address outside the game, save a file the client made. The call sites,
+the plan and the judge's scores are in `docs/refactors/client-platform.md`.
+
+**Why.** The recorded shell is Electron, and that choice rests on an overlay nobody has measured: the
+measurement runs a Tauri window beside it with the same bundle and may reverse the choice. A desktop
+shell refuses `window.open` and navigation off its own origin, a blob download is not known to work in
+every webview, and Steam's calls have no web API, so some capabilities cannot be reached through the web
+platform alone. Storage, input, size and visibility are the same API in all three hosts: a wrapper
+around them would have one implementation and nothing to adapt.
+
+**Rules out.** One host object carrying every concern; choosing the adapter at build time (one bundle
+per shell, and shell code in the client tree); leaving everything to the shell's own handling of web
+APIs (no route for a call with no web API); a port for a concern no second host needs; a bridge that
+hands the page an object of the shell's, or a bridge function that acts on what the page sends without
+checking it in the shell's own process. Whether a shell's page may call into the shell at all is that
+shell's security posture. The bridge is the default, one the operator may overrule: the Electron shell
+as specified exposes nothing but the shell document, and would have to allow the bridge's functions. A
+shell that exposes none still fits, because the browser's code runs and it handles those web APIs itself.
+
 ## Local-play budgets are measured medians with stated headroom, on one machine profile
 
 **Decision.** A single-player world and a friends server hold these budgets, measured the way

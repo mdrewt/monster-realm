@@ -3,9 +3,11 @@
 `client/src/main.ts` is the client shell: the entry module, with no exports, that wires the
 store, prediction, input, the context stack and every view. This file is the plan its
 extractions follow. It names the modules the shell splits into, the owner of every
-module-level `let` that `main.ts` declares, how a non-owner reaches that state, and the
-extractions still to make. The decision and what it rules out are in `docs/DECISIONS.md`
-("Code leaves `client/src/main.ts` into owner modules under `client/src/shell/`").
+module-level `let` that `main.ts` declares and how a non-owner reaches that state. The
+extractions still to make, with the symbols each takes, are section 4 of
+`docs/refactors/client-platform.md`, in order. The decision and what it rules out are in
+`docs/DECISIONS.md` ("Code leaves `client/src/main.ts` into owner modules under
+`client/src/shell/`").
 
 ## Rules
 
@@ -17,7 +19,8 @@ extractions still to make. The decision and what it rules out are in `docs/DECIS
 2. **Shared collections follow the same rule.** A `Set` or `Map` that more than one module
    mutates is exported as `ReadonlySet` or `ReadonlyMap`, and each mutation is an owner function.
    An object with methods of its own (`held`, `inputRouter`, `screenHost`, the two rings, the
-   live region, the predictor) is used through those methods by any module that imports it.
+   live region, the predictor, `owed`, `serverClock`) is used through those methods by any module
+   that imports it.
 3. **A live binding is never copied at module scope.** `const id = identity` outside a function
    freezes the value. Inside a function, an import does not narrow after its mount the way a
    local `let` narrows after an assignment, so `main()` builds into a local any instance it uses
@@ -44,8 +47,9 @@ extractions still to make. The decision and what it rules out are in `docs/DECIS
 7. **Imports point down.** A shell module imports only shell modules listed above it in the map.
    A lower module reaches upward in two ways only: a port ("Ports" below), or the parameter
    object of a pump ("Pumps" below). The existing modules (`ui/`, `net/`, `input/`,
-   `prediction/`, `render/`, `tactics/`, `convert/`, `observability/` and the wasm package) are
-   importable by every shell module and import neither `shell/` nor `main.ts`.
+   `prediction/`, `render/`, `tactics/`, `convert/`, `observability/`, the host ports under
+   `platform/` and the wasm package) are importable by every shell module and import neither
+   `shell/` nor `main.ts`.
 8. **Views get their handlers from the composition root.** `main()` constructs each boot-built
    view with its handler closures and hands the instance to `shell/views.ts`. The three battle
    views are built lazily inside `shell/battleFrame.ts` with the handlers its port carries.
@@ -62,25 +66,29 @@ All paths are under `client/src/shell/`. The table is in import order.
 | 4 | `feedback.ts` | Where a message goes: the toast, the world hint, the announcer, the error ring and overlay | `views` |
 | 5 | `session.ts` | The link to the server: the store, the identity, the connection, hydration, the guarded send, the session-event latches | `config`, `feedback` |
 | 6 | `screenContext.ts` | What a screen adapter reads: `screenCtx`, what each open bound, the motion preference | `inputState`, `session` |
-| 7 | `notices.ts` | The trade and challenge requests waiting on this client | `views`, `session` |
-| 8 | `battleFrame.ts` | The battle frame: its three views, which one shows, the outcome latch, the tactics memos | `feedback`, `session`, `screenContext` |
-| 9 | `frames.ts` | The context stack and what sits on it: opens, syncs, the mirrored tables, the gates | `views`, `inputState`, `feedback`, `session`, `screenContext`, `battleFrame` |
-| 10 | `movement.ts` | The own character in its zone: the map, the predictor, intents, reconcile, the zone switch, the renderer handle | `config`, `inputState`, `feedback`, `session`, `screenContext`, `battleFrame`, `frames` |
-| 11 | `account.ts` | The session terminal, the claim prompt and Profile's three sections | `config`, `views`, `feedback`, `session`, `frames` |
-| 12 | `screens.ts` | The other player screens: how each opens and how each follows the store | `config`, `views`, `feedback`, `session`, `screenContext`, `frames` |
-| 13 | `menu.ts` | The main menu: its state, its paint, the frame each entry opens | `views`, `feedback`, `session`, `screenContext`, `notices`, `frames`, `account`, `screens` |
-| 14 | `interact.ts` | What A does at the world base: candidates, the run, the world port, chips and row words | `config`, `views`, `inputState`, `feedback`, `session`, `screenContext`, `notices`, `battleFrame`, `frames`, `movement`, `screens` |
-| 15 | `bugReport.ts` | The bug bundle download | `feedback`, `session`, `movement` |
-| 16 | `commands.ts` | Running one command: `dispatch`, its refusals, the stack moves it applies | `config`, `views`, `feedback`, `session`, `notices`, `battleFrame`, `frames`, `account`, `screens`, `menu`, `interact`, `bugReport` |
-| 17 | `input.ts` | Keys and pointer presses into router edges, accelerators and the remap capture | `views`, `inputState`, `feedback`, `session`, `screenContext`, `battleFrame`, `frames`, `movement`, `account`, `screens`, `menu`, `interact`, `bugReport`, `commands` |
-| 18 | `devHooks.ts` | The DEV hook objects the end-to-end specs read | `config`, `views`, `session`, `battleFrame`, `frames`, `movement`, `menu` |
+| 7 | `commandPort.ts` | The port a lower module runs a command or a stack move through | none |
+| 8 | `notices.ts` | The trade and challenge requests waiting on this client | `views`, `session` |
+| 9 | `battleFrame.ts` | The battle frame: its three views, which one shows, the outcome latch, the tactics memos | `feedback`, `session`, `screenContext`, `commandPort` |
+| 10 | `frames.ts` | The context stack and what sits on it: opens, syncs, the mirrored tables, the gates | `views`, `inputState`, `feedback`, `session`, `screenContext`, `battleFrame` |
+| 11 | `movement.ts` | The own character in its zone: the map, the predictor, intents, reconcile, the zone switch, the renderer handle | `config`, `inputState`, `feedback`, `session`, `screenContext`, `battleFrame`, `frames` |
+| 12 | `account.ts` | The session terminal, the claim prompt and Profile's three sections | `config`, `views`, `feedback`, `session`, `frames` |
+| 13 | `screens.ts` | The other player screens: how each opens and how each follows the store | `config`, `views`, `inputState`, `feedback`, `session`, `screenContext`, `commandPort`, `notices`, `frames` |
+| 14 | `menu.ts` | The main menu: its state, its paint, the frame each entry opens, the sign-in gate | `config`, `views`, `feedback`, `session`, `screenContext`, `commandPort`, `notices`, `frames`, `account`, `screens` |
+| 15 | `interact.ts` | What A does at the world base: candidates, the run, the world port, chips and row words | `config`, `views`, `inputState`, `feedback`, `session`, `screenContext`, `commandPort`, `notices`, `battleFrame`, `frames`, `movement`, `screens` |
+| 16 | `bugReport.ts` | The bug bundle download | `feedback`, `session`, `movement` |
+| 17 | `commands.ts` | Running one command: `dispatch`, its refusals, the stack moves it applies | `config`, `views`, `feedback`, `session`, `notices`, `battleFrame`, `frames`, `account`, `screens`, `menu`, `interact`, `bugReport` |
+| 18 | `input.ts` | Keys, pad and pointer presses into router edges, accelerators and the remap capture | `views`, `inputState`, `feedback`, `session`, `screenContext`, `battleFrame`, `frames`, `movement`, `account`, `screens`, `menu`, `interact`, `bugReport`, `commands` |
+| 19 | `devHooks.ts` | The DEV hook objects the end-to-end specs read | `config`, `views`, `session`, `battleFrame`, `frames`, `movement`, `menu` |
 
 `main.ts` imports any of them and nothing imports `main.ts`.
 
 `applyStack`, `closeFrame` and `dispatch` call each other, so they share `commands.ts`;
 `reconcileFromStore` and `sendIntent` share `movement.ts`; `sendDismiss` and `stepShopOpen`
-share `screens.ts`; `applyPrivacy` and `sendPrivacy` share `account.ts`. No other call cycle
-exists among the shell's functions.
+share `screens.ts`; `applyPrivacy` and `sendPrivacy` share `account.ts`. Four modules below
+`commands.ts` call `dispatch` or `applyStack` (the battle views' handlers and
+`popOverBattleBeforeSwitch`, `closeTradeEditor`, `applyMenuStep` and `showSignInGate`,
+`runInteract`): they reach both through the command port. The import columns are the ones each
+extraction confirms at its own base.
 
 ## Ports
 
@@ -90,11 +98,13 @@ registers its first listener. A port member called before the install throws.
 | Lower module | Reaches up for | Today's upward references |
 |---|---|---|
 | `feedback.ts` | whether the main menu is the top frame, and a repaint of the menu | none: `hintOnMenu` asks the host `installHintHost` took (`menuOnTop`), and `paintWorldHint` calls its `repaintMenu` |
-| `battleFrame.ts` | the handlers of the three battle views, the pop of the player frames over a battle, and whether the outcome is the top frame | `buildDeployPanel`, `buildResultsPanel` and `tacticsShellDeps` call `dispatch`; `popOverBattleBeforeSwitch` calls `applyStack` and reads `contextStack`; `buildResultsPanel` reads `contextStack` |
+| `commandPort.ts`, for `battleFrame.ts`, `screens.ts`, `menu.ts` and `interact.ts` | `dispatch` and `applyStack` | `buildDeployPanel`, `buildResultsPanel`, `tacticsShellDeps`, `runInteract`, `applyMenuStep` and `closeTradeEditor` call `dispatch`; `popOverBattleBeforeSwitch` and `showSignInGate` call `applyStack` |
+| `battleFrame.ts` | the stack as the battle frame reads it, and the outcome edge | `popOverBattleBeforeSwitch` and `buildResultsPanel` read `contextStack`; `holdResultsForPlayback` assigns `outcomeShownAtMs` and `autoContinuedAtMs` |
 
-The battle port has the shape of the handler objects `main()` passes to every boot-built view.
-The mount element is not part of it: `main()` mounts it at boot, and until then `battleMount`
-is `undefined` and the battle functions return early, as they do in `main.ts`.
+The command port is one typed object with two members, declared in a module that imports no
+shell module. The battle port carries what only the battle frame needs. The mount element is
+part of neither: `main()` mounts it at boot, and until then `battleMount` is `undefined` and the
+battle functions return early, as they do in `main.ts`.
 
 ## Pumps
 
@@ -164,6 +174,8 @@ listed, and a read a pump receives through its parameter object is a read by `ma
 | `lastPrivacyStatusLabel` | `account.ts` | none | none |
 | `exportAssembly` | `account.ts` | none | `onReconnect`: reset |
 | `claimRaised` | `main.ts` | none | none: every writer is a `connect` callback |
+| `signInGate` | `menu.ts` | none | none: `applySignInGate` is its one writer, and `main` calls it from the `connect` callbacks |
+| `saidGateLine` | `menu.ts` | none | none |
 
 ### Prediction and input
 
@@ -185,6 +197,8 @@ listed, and a read a pump receives through its parameter object is a read by `ma
 | `paintWorldPrompt` | `input.ts` | none | `main()` boot: mount |
 | `worldCanvasEl` | `input.ts` | `main` | `main()` boot: mount |
 | `textStep` | `main.ts` | none | none: read and written by the Controls handlers `main()` builds |
+| `worldRevealed` | `movement.ts` | none | the scope callback of `connect`: event |
+| `padPhase` | `input.ts` | none | none |
 
 ### Per-feature view state
 
@@ -213,6 +227,7 @@ listed, and a read a pump receives through its parameter object is a read by `ma
 | `evolutionNoticeBanner` | `views.ts` | `screens`, `main` | `main()` boot: mount |
 | `errorOverlayView` | `views.ts` | `feedback`, `notices`, `input` | `main()` boot: mount |
 | `hintBarView` | `views.ts` | `main` | `main()` boot: mount |
+| `evolutionNoticeOk` | `views.ts` | `interact` | `main()` boot: mount |
 | `deployPanel` | `battleFrame.ts` | `devHooks`, `main` | none |
 | `resultsPanel` | `battleFrame.ts` | `frames`, `devHooks`, `main` | none |
 | `tacticsBattle` | `battleFrame.ts` | `movement`, `commands`, `devHooks`, `main` | none |
@@ -227,12 +242,15 @@ listed, and a read a pump receives through its parameter object is a read by `ma
 | `dismissedBattleId` | `battleFrame.ts` | `frames`, `commands` | `closeFrame` continuing the outcome: event; `resetPredictionState`: reset |
 | `battleSynced` | `battleFrame.ts` | `frames` | `resetPredictionState`: reset |
 | `unrenderableReported` | `battleFrame.ts` | none | none |
+| `resultsAwaitDrain` | `battleFrame.ts` | `frames`, `input`, `main` | `resetPredictionState`: reset |
 | `boundShopId` | `screenContext.ts` | `screens` | `openPendingShop`: event; `onReconnect`: reset |
 | `boundHealLocationId` | `screenContext.ts` | `screens` | `runInteract`: event; `onReconnect`: reset |
 | `boundSocialTab` | `screenContext.ts` | none | `openSocial`: event; `onReconnect`: reset |
 | `boundMonstersTab` | `screenContext.ts` | none | `openMenuTarget`: event; `onReconnect`: reset |
 | `boundTradeSessionId` | `screenContext.ts` | `screens` | `openTradeEditor`: event; `resetTradeSessionState`, on a join and on a reconnect: reset; the batch listener that drops a closed session: event |
 | `shopOpen` | `screens.ts` | `commands` | none |
+| `pendingTradeOpen` | `screens.ts` | `interact`, `commands` | `dispatch` sending the open, and the open refused: event |
+| `knownSessionIds` | `screens.ts` | none | none |
 | `questAckBaseline` | `screens.ts` | none | `onReconnect`: reset |
 | `menuState` | `menu.ts` | `input`, `devHooks` | none |
 | `menuBadged` | `menu.ts` | none | none |
@@ -248,18 +266,21 @@ listed, and a read a pump receives through its parameter object is a read by `ma
 | `sawFractionalOwnMotion` | `movement.ts` | `devHooks` | the frame loop's world step: pump |
 | `moveSendCount` | `movement.ts` | `devHooks` | none |
 | `moveRejectCount` | `movement.ts` | `devHooks` | none |
+| `lastRendered` | `movement.ts` | `devHooks` | the frame loop's world step: pump |
 
-The three movement latches are written where the event happens and read only by `snapshot`.
+The movement latches are written where the event happens and read only by `snapshot`.
 
 ### Shared collections
 
 | Collection | Owner | Mutated from outside the owner by |
 |---|---|---|
 | `navHeldCodes` | `inputState.ts` | nothing: `noteNavHeld`, `releaseNavHeld` and `releaseAllInput` are its writers |
-| `dismissedRequests` | `notices.ts` | `worldPort`, `onReady`, `onReconnect` |
-| `announcedRequests` | `notices.ts` | the batch listener that announces a new request, `onReady`, `onReconnect` |
-| `answeredRequests` | `notices.ts` | `dispatch`, `onReady`, `onReconnect` |
+| `dismissedRequests` | `notices.ts` | `worldPort`, the batch listener that follows the trade sessions, `onReady`, `onReconnect` |
+| `announcedRequests` | `notices.ts` | the batch listener that announces a new request, the one that follows the trade sessions, `onReady`, `onReconnect` |
+| `answeredRequests` | `notices.ts` | `dispatch`, the batch listener that follows the trade sessions, `onReady`, `onReconnect` |
 | `careInFlight` | `commands.ts` | `onReconnect` |
+| `openedTradeSessions` | `notices.ts` | `openTradeEditor`, `resetTradeSessionState`, the batch listener that follows the trade sessions |
+| `zoneWarpsById` | `movement.ts` | nothing: `zoneWarps` is its one writer |
 | `frameOpens` | `frames.ts` | nothing: `openFrame` is its one writer |
 | `tacticsMapFacts` | `battleFrame.ts` | nothing: `mapFactsOf` is its one writer |
 
@@ -272,6 +293,8 @@ function takes over.
 | Owner | Proposed function | Takes over |
 |---|---|---|
 | `notices.ts` | `markAnswered`, `dismissRequest`, `markAnnounced`, `clearNoticeSets` | every mutation of the three request sets |
+| `notices.ts` | `markSessionOpened`, `forgetOpenedSessions` | every mutation of `openedTradeSessions` |
+| `commandPort.ts` | `installCommandPort` | the command port |
 | `battleFrame.ts` | `installBattlePort` | the battle port |
 | `battleFrame.ts` | `mountBattleFrame` | the `battleMount` assignment at boot |
 | `battleFrame.ts` | `resetBattleFrame` | the battle and tactics lines of `resetPredictionState`, in their position |
@@ -281,6 +304,8 @@ function takes over.
 | `movement.ts` | `adoptRenderer`, `adoptTelemetry` | the `renderer` and `telemetry` assignments |
 | `movement.ts` | `stepWorldFrame` | the frame loop's world step |
 | `movement.ts` | `setRawMapZoneForTest` | the body of the test-only zone setter of that name, which `snapshot` goes on exposing |
+| `movement.ts` | `revealWorldAfterScopeEdge` | the `worldRevealed` assignment in the scope callback |
+| `screens.ts` | `notePendingTradeOpen`, `dropPendingTradeOpen` | the two `pendingTradeOpen` assignments in `dispatch`: set when the open is sent, cleared when it is refused |
 | `account.ts` | `cancelArmedDecline` | the claim view's dismissed handler |
 | `account.ts` | `pumpPrivacyCountdown`, `forgetPrivacyCountdown`, `dropExportAssembly` | the frame loop's privacy step and the two resets in `onReconnect` |
 | `screens.ts` | `resetQuestAck` | the baseline reset in `onReconnect` |
@@ -291,12 +316,13 @@ function takes over.
 
 - The boot prelude that writes shared state: the locale block and the text-step apply; and the
   telemetry config.
-- Three bindings: `textStep`, `claimRaised`, `lastFrameErrorMessage`.
+- Three bindings: `textStep`, `claimRaised`, `lastFrameErrorMessage`; and
+  `protocolMismatchLine`, beside the `connect` callback that calls it.
 - `RECONNECT_RESETS`, whose rows read the view handles through their imports.
 - `main()`: the view constructions and their mounts, the status, toast, prompt and banner
   elements, the `connect` call with its callbacks, the world prompt painter and the frame loop.
   The frame loop stays one function whose body is the ordered list of the owners' pumps.
-- Every registration, the two port installs ahead of them, and the DEV hook assignments inside
+- Every registration, the port installs ahead of them, and the DEV hook assignments inside
   `if (import.meta.env.DEV)`.
 
 ### Registration order
@@ -304,27 +330,32 @@ function takes over.
 `main.ts` registers in this order. A batch listener is named by its owner and what it does.
 The listeners that only forward stay inline: the ones that run `reconcileStack`,
 `reconcileFromStore`, `refreshBox`, `refreshRaising` and `refreshBattle`, the last batch listener,
-the `error` pair, the two key-phase filters, `blur` and `visibilitychange`.
+the `error` pair, the two key-phase filters, `blur` and `visibilitychange`. The pad has no
+listener: the frame loop polls it.
 
 1. batch: `interact` counts the batch for the candidate memo.
 2. batch: `account` recomputes the export assembly and repaints an open Privacy section.
-3. `window` `error`, then `window` `unhandledrejection`: `pushError`.
-4. batch: `frames` runs `reconcileStack`. It is the first of the listeners that show or hide a view.
-5. batch: `movement` runs `reconcileFromStore`.
-6. `window` `keydown` in the capture phase for Escape, `window` `keydown` in the bubble phase
+3. batch: `account` repaints the Name section's current name while Profile is open.
+4. batch: `menu` lowers the sign-in gate once the own player row is in the store.
+5. `window` `error`, then `window` `unhandledrejection`: `pushError`.
+6. batch: `frames` runs `reconcileStack`. It is the first of the listeners that show or hide a view.
+7. batch: `movement` runs `reconcileFromStore`.
+8. `window` `keydown` in the capture phase for Escape, `window` `keydown` in the bubble phase
    for every other key, `window` `keyup`, `window` `blur`, `document` `visibilitychange`.
-7. batch: `screens` runs `refreshBox`, then `refreshRaising`.
-8. batch: `battleFrame` runs `refreshBattle`.
-9. batch: `screens` paints the dialogue and steps the deferred shop open; refreshes the quest
-   log; acknowledges a completed quest; refreshes the heal frame; refreshes the shop; refreshes
-   the trade panel; refreshes the challenge panel.
-10. batch: `menu` announces a new request and follows the request badge.
-11. batch: `screens` refreshes the leaderboard.
-12. batch: `session` steps the battle emit latch, then the ranked emit latch.
-13. batch: `screens` paints the evolution notice banner.
-14. batch: `frames` syncs the stack and lets every open frame's adapter observe the batch. It
+9. batch: `screens` runs `refreshBox`, then `refreshRaising`.
+10. batch: `battleFrame` runs `refreshBattle`, then feeds the shown battle's clock rows to the
+    server-time estimate.
+11. batch: `screens` paints the dialogue and steps the deferred shop open; refreshes the quest
+    log; acknowledges a completed quest; refreshes the heal frame; refreshes the shop; follows the
+    trade sessions (a face-to-face editor opens when its row arrives, a closed session closes its
+    editor); refreshes the challenge panel.
+12. batch: `menu` announces a new request and follows the request badge.
+13. batch: `screens` refreshes the leaderboard.
+14. batch: `session` steps the battle emit latch, then the ranked emit latch.
+15. batch: `screens` paints the evolution notice banner.
+16. batch: `frames` syncs the stack and lets every open frame's adapter observe the batch. It
     is the last batch listener.
-15. The DEV hook assignments, the build stamp, then `void main()`.
+17. The DEV hook assignments, the build stamp, then `void main()`.
 
 ## Tests and docs that follow the code
 
@@ -370,24 +401,13 @@ Prose that names `main.ts` as the home of a symbol follows the symbol, in the sl
 
 ## Extractions, in order
 
-Each is one slice. The order is the map's: a moved function reads only modules already
-extracted, or a port. A **plain move** relocates whole top-level symbols with every binding
-they write; bodies change only by imports, and an inline listener body gains a name. An
-**ownership change** leaves a writer outside the destination, so it adds an owner function, or
-it installs a port or adds a pump. The slice for a line deletes that line.
-
-7. `client/src/shell/notices.ts` takes `dismissedRequests`, `announcedRequests`, `answeredRequests`, `noticeInput`, `livePending`, `requestLine` and `releaseAnswered`. Ownership change: `dispatch`, `worldPort` and `main` mutate the three sets.
-8. `client/src/shell/battleFrame.ts` takes `battleViews`, `battleFrameShown`, `hideAllBattleViews`, `activeBattleView`, `tacticalOwnsStart`, `battleHint`, `tacticsRules`, `tuningOf`, `refreshBattle`, `popOverBattleBeforeSwitch`, `ownMonsterName`, `tacticsMapFacts`, `mapFactsOf`, `mySideOf`, `buildDeployPanel`, `noteRatingBaseline`, `ratingLineFor`, `buildResultsPanel`, `refreshTacticsShell`, `tacticsVMEqual`, `buildTacticsVM`, `tacticsShellDeps`, `pumpStillThere`, `pumpClock`, `tradedIds`, `ownDeployLocked` and the bindings `deployPanel`, `resultsPanel`, `tacticsBattle`, `battleMount`, `tacticsRulesPort`, `tacticsTuning`, `tacticsShown`, `tacticsRating`, `tacticsIngested`, `lastTacticsVM`, `stillThereAnnouncedFor`, `dismissedBattleId`, `battleSynced` and `unrenderableReported`. Ownership change: the battle port, the `battleMount` mount, the lines `resetPredictionState` resets and the latch `closeFrame` writes.
-9. `client/src/shell/frames.ts` takes `overlayProbes`, `overlayHandles`, `screenViews`, `FrameOpen`, `frameOpens`, `frameOpenOf`, `screenHost`, `overlayVerdict`, `shownOverlays`, `contextStack`, `runStackCommands`, `outcomeShownAtMs`, `autoContinuedAtMs`, `syncStack`, `upperIds`, `shownPlayerFrames`, `panelShown`, `socialPanelView`, `hideFrame`, `topOverlay`, `menuPlace`, `reconcileStack`, `movementGate`, `worldBaseLive`, `openFrame`, `openSeated`, `topSocialFrame`, `syncedTop`, `closeLeftFocusAdrift`, `judgeCloseFocus`, `inHiddenSubtree`, `focusInsideHiddenSubtree`, `focusAdrift`, `lastCareTickAtMs` and `CARE_READINESS_TICK_MS`. Ownership change: `main` sweeps `contextStack` on reconnect and writes `autoContinuedAtMs` and `lastCareTickAtMs` in the frame loop.
-10. `client/src/shell/movement.ts` takes `rawMap`, `applyMove`, `predictor`, `resolver`, `renderer`, `telemetry`, `frameWindow`, `lastCamX`, `lastCamY`, `sawFractionalOwnMotion`, `resetPredictionState`, `zoneSyncFailureCount`, `switchZone`, `reconcileFromStore`, `lastSentSeq`, `MOVE_REJECT_POLICY`, `moveRejectLimit`, `moveSendCount`, `moveRejectCount`, `noteMoveRejection`, `sendIntent`, `step` and `jump`. Ownership change: `main` mounts `renderer` and `telemetry` and writes the camera hold, the motion latch and `frameWindow` in the frame loop; `snapshot` sets `rawMap`.
-11. `client/src/shell/account.ts` takes `claimModelState`, `sessionModelState`, `privacyModelState`, `lastPrivacyCountdown`, `livePrivacyCountdown`, `lastPrivacyStatusLabel`, `exportAssembly`, `renderSession`, `applySession`, `renderClaim`, `applyClaim`, `renderPrivacy`, `downloadExportBundle`, `applyPrivacy`, `sendPrivacy`, `profileOpen`, `showProfile`, `openProfile` and the batch listener that recomputes the export assembly. Ownership change: `main` writes `claimModelState`, `lastPrivacyCountdown`, `livePrivacyCountdown` and `exportAssembly`.
-12. `client/src/shell/screens.ts` takes `shopOpen`, `questAckBaseline`, `openQuestLog`, `socialChrome`, `showSocialPanel`, `hidePanel`, `socialOpen`, `socialFrameView`, `openSocial`, `openPropose`, `openHelp`, `openControls`, `refreshBox`, `refreshRaising`, `stepShopOpen`, `sendDismiss`, `openPendingShop`, `toastControls` and the batch listeners that refresh a screen. Ownership change: `main` resets `questAckBaseline`.
-13. `client/src/shell/menu.ts` takes `menuState`, `menuBadged`, `renderMenu`, `openMenu`, `profileSectionOf`, `socialTabOf`, `openMenuTarget`, `applyMenuStep`, `handleMenuPointer` and the batch listener that follows the request badge. Plain move.
-14. `client/src/shell/interact.ts` takes `interactCandidatesFn`, `lastInteractErrorMessage`, `reportInteractError`, `interactBatch`, `interactMemo`, `worldCandidates`, `facedChip`, `hintChips`, `runInteract`, `worldPort`, `interactVerb`, `sizeRowLabel`, `closeRowLabel`, `requestRowLabel`, `interactName`, `interactKeycap`, `interactChipText`, `ownPartyIds`, `eligibleChallengeIds` and the batch listener that counts the batch. Plain move.
-15. `client/src/shell/bugReport.ts` takes `projectKeyStore` and `downloadBugBundle`. Plain move.
-16. `client/src/shell/commands.ts` takes `DONE`, `careInFlight`, `ActionKinds`, `actionFeedback`, `SHOP_BUY`, `SHOP_SELL`, `TRADE_ANSWER`, `TRADE_SETTLE`, `TRADE_CANCEL`, `TRADE_PROPOSE`, `RENAME`, `dispatch`, `refusedShopQty`, `refusedInBattle`, `applyStack`, `closeFrame` and `endedLine`. Ownership change: `main` clears `careInFlight`.
-17. `client/src/shell/input.ts` takes `routeCtx`, `applyRouterEffect`, `routeEdge`, `runAccel`, `openAccelPath`, `controlsCapture`, `endControlsCapture`, `captureControlsKey`, `cancelControlsCapture`, `pointerSource`, `paintWorldPrompt`, `pointerPress`, `pointerTop`, `suppressNativeMovementDefault`, `worldCanvasEl`, `gameScreenEl`, `onKeyDown`, `handleKeyDown`, `STOP_TYPING_TARGETS`, `stopTyping` and the body of the keyup listener. Ownership change: `main` mounts `pointerSource`, `paintWorldPrompt` and `worldCanvasEl`.
-18. `client/src/shell/devHooks.ts` takes `snapshot`, `mrTradeHook`, `mrPvpHook`, `mrTacticsHook` and `rowProbeState`. Plain move; the gated `window` assignments stay in `main`.
+The list is section 4 of `docs/refactors/client-platform.md`: one row per slice, with the
+symbols each module takes, whether the slice is a move or an interface change, and the tests that
+cover it. A **move** relocates whole top-level symbols with every binding they write; bodies
+change only by imports, and an inline listener body gains a name. An **interface** change leaves a
+writer outside the destination, so it adds an owner function, or it installs a port or adds a
+pump. The slice for a row deletes that row and brings this file's tables in line with what it
+moved.
 
 An extraction that moves boot wiring or a DEV hook runs the full end-to-end suite as well as
 the unit suites, because only the end-to-end specs read the hooks.
