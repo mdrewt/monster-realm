@@ -940,420 +940,314 @@ Tactical engine.
 
 ## Accounts, guest identity and the claim flow
 
-**Decision.** Anonymous play is first-class: every connection gets a SpacetimeDB
-identity, and `on_connect` never rejects a connection for having no account (a world whose access
-rule is not `Open` refuses an identity it has not admitted, account or not: see "A world that is
-not open refuses an unadmitted identity at connect and in every reducer; the owner relays the
-door"). An
-anonymous connection is accepted but cannot join on a build that enforces ownership (see
-"Ownership is enforced unless a dev feature switches it off"). An
-`account` row is created only for a JWT from an allowed issuer and audience
-(`ALLOWED_ISSUERS`/`ALLOWED_AUDIENCE` in `server-module/src/accounts.rs`; `ALLOWED_ISSUERS` is the
-build's own login-issuer list, computed from its cargo features). A token from an unrecognised issuer falls back to
-anonymous play; a token from an allowed issuer with the wrong audience is disconnected.
-An account holds no PII: `Identity = f(iss, sub)` keys everything. A guest moves their
-progress to an account like this. The browser mints a 256-bit claim code
-(`crypto.getRandomValues`, `client/src/net/claimCode.ts`) and registers it with
-`start_guest_claim` *before* redirecting to sign-in. After sign-in, the account
-identity calls `complete_guest_claim`, which runs every caller-state guard before it
-looks up the code, then re-keys the guest's persistent game data onto the account
-(`rekey_all`: monsters, inventory, quests, wallet, profile and the rest; the retired guest keeps
-a dialogue-state tombstone, see "The starter is a once-per-identity grant recorded by a marker;
-ownership is never the test"), purges the guest's export bundles, erases the guest's world rows (admission, wrong-password record, binding and bind nonce; none is moved, so a retired guest identity that reconnects holds no world row), erases the guest's finished battles as the deletion
-cascade erases its subject's (`schema::erase_tactical_rows`, then
-`battle::anonymize_battles`: the per-battle tactical rows go, and the guest's side of
-each `battle` and `battle_summary` row becomes the tombstone identity), and consumes
-the code. The destination must own no game data. That holds because the client does not call `join_game` on a signed-in
-connection while an unconsumed claim code is stored; it claims first
-(`client/src/net/connection.ts`). A claim expires after `CLAIM_TTL_MS` (15 min),
-cleaned up by a scheduled reaper.
+**Decision.** Anonymous play is first-class: every connection gets an identity, and the module never
+rejects a connection for having no account. A world whose access rule is not open still refuses an
+identity it has not admitted, account or not, and on a build that enforces ownership an anonymous
+connection is accepted but refused by every reducer a player plays through. An account row is
+created only for a token from an issuer on the build's own login-issuer list and for this game's
+audience: an unrecognised issuer falls back to anonymous play, and an allowed issuer with the wrong
+audience is disconnected. An account holds no PII; the identity, a function of issuer and subject,
+keys everything. A guest moves its progress to an account with a 256-bit claim code the browser
+mints and registers before it redirects to sign-in. After sign-in the account completes the claim,
+which runs every caller-state guard before it looks the code up, then moves the guest's persistent
+game data onto the account (the retired guest keeps a tombstone of its dialogue state), and erases
+instead of moving the guest's export bundles, its world rows and its finished battles, whose
+records keep the guest's side as the tombstone identity. The destination must own no game data,
+which holds because the client claims before it joins. A claim expires after 15 minutes.
 
-**Why.** The server never generates the secret, so its strength does not depend on
-the server's RNG. Checking caller state before resolving the code means the reducer
-cannot be used to test whether a code exists; malformed and already-used codes return
-the same error. Registering the code before the redirect is what lets the claim
-survive the round trip to the identity provider. A finished battle is history shared
-with an opponent, not progress, and the guest identity retires at the claim. Nothing
-else reliably removes what names it: every sweep and the 24 h GC keep `battle_summary` (only
-its cap reaper deletes rows, oldest first, once 100,000 newer rows exist),
-a wild or practice anchor is swept only on its own player's next battle, and a PvP
-anchor waits on the opponent's next battle in the same role.
+**Why.** The server never generates the secret, so its strength does not depend on the server's
+RNG. Checking caller state before resolving the code means the reducer cannot be used to test
+whether a code exists; malformed and already-used codes return the same error. Registering the code
+before the redirect is what lets the claim survive the round trip to the identity provider. A
+finished battle is history shared with an opponent, not progress, and the guest identity retires at
+the claim. Nothing else reliably removes what names it: every sweep and the 24 h GC keep the battle
+summary (only its cap reaper deletes rows, oldest first, once 100,000 newer rows exist), a wild or
+practice anchor is swept only on its own player's next battle, and a PvP anchor waits on the
+opponent's next battle in the same role.
 
-**Rules out.** Server-minted claim codes; storing email or JWT subjects; rejecting a
-connection for being anonymous; widening the audience allowlist to more than this game's client;
-re-keying battle rows onto the claiming account (a re-key helper per tactical table, to
-carry history that only telemetry reads).
+**Rules out.** Server-minted claim codes; storing email or JWT subjects; rejecting a connection for
+being anonymous; widening the audience allowlist to more than this game's client; re-keying battle
+rows onto the claiming account (a re-key helper per tactical table, to carry history that only
+telemetry reads).
+
+The issuer lists, the claim's guards and what it moves or erases: `ARCHITECTURE.md` "Accounts
+lifecycle", Signing in and Claiming guest progress.
 
 ## The starter is a once-per-identity grant recorded by a marker; ownership is never the test
 
-**Decision.** A first `join_game` grants the starter monster and the starter kit, once per
-identity. The kit is data (`game-core/content/starter_kit.ron`: 200 gold, 2 Lure Berries, 1
-Antidote), checked at publish by `validate_starter_kit`. Kit items are ordinary items: they can
-be traded and sold. The join shows no notice for the kit, because the wallet readout and the Bag
-already show it. The grant is recorded by the flag
-`sys:starter_claimed` in the owner's private `player_dialogue_state.flags`, set in the same
-transaction as the kit. `onboarding::starter_grant(claimed, owns_monster)` is the rule: a set
-marker grants nothing, whatever the identity owns; an unset marker grants the kit, and the
-monster too unless the identity already owns one. The kit is granted whole or not at all: it is
-checked against the stack and balance caps first, and a kit that does not fit is skipped with a
-`starter_kit_skipped` log line, leaving the marker unset so the next join tries again. A kit
-that fails to load refuses the join before anything is written. The `sys:` flag namespace is
-reserved for the server: `validate_npc_content` refuses any dialogue condition or effect, quest
-start condition or quest step condition that names a `sys:` flag. The guest claim moves the
-guest's dialogue row to the account and leaves the retired guest a tombstone row: its `sys:`
-flags, the starter marker, and a copy of its done quests (`npc::rekey_npc_state`).
+**Decision.** A first join grants the starter monster and the starter kit, once per identity. The
+kit is content, checked at publish, and its items are ordinary items: they can be traded and sold.
+The join shows no notice for the kit, because the wallet readout and the Bag already show it. The
+grant is recorded by a marker flag in the owner's private dialogue state, set in the same
+transaction as the kit. A set marker grants nothing, whatever the identity owns; an unset marker
+grants the kit, and the monster too unless the identity already owns one. The kit is granted whole
+or not at all: a kit that would pass a stack or balance cap is skipped with a log line, leaving the
+marker unset so the next join tries again, and a kit that fails to load refuses the join before
+anything is written. The marker's flag namespace is reserved for the server, and content may not
+name a flag in it. The guest claim moves the guest's dialogue state to the account and leaves the
+retired guest a tombstone: its reserved flags, the marker, and a copy of its done quests.
 
-**Why.** `on_disconnect` deletes the `player` row when an identity's last session ends, so the
-next join re-runs the grant check; a rule that reads ownership re-grants a starter (with fresh
-hidden IVs) to any identity that reaches zero monsters. The guest claim is such a path: it moves
-every monster to the account while the retired guest token can still call `join_game`. The
-marker lives in `player_dialogue_state` rather than a new table because that row is already
-private, re-keyed by the claim, erased by the deletion cascade, counted as game data and part of
-the owner's export; a new table would need all of that wiring again. The tombstone is the one
-place the claim copies instead of moving: without it the retired guest would be granted a second
-starter and kit, and could redo a finished quest. Making the kit untradeable would need a new item
-field and a trade rule, and would not stop one player farming throwaway identities on its own:
-each fresh identity already gets a tradeable starter monster. How the official server keeps those
-payouts from reaching a main identity is an open launch condition (`docs/economy-tuning.md`,
-"Shared-economy caveat").
+**Why.** The player row is deleted when an identity's last session ends, so the next join re-runs
+the grant check; a rule that reads ownership re-grants a starter (with fresh hidden IVs) to any
+identity that reaches zero monsters. The guest claim is such a path: it moves every monster to the
+account while the retired guest token can still join. The marker lives in the dialogue state rather
+than a new table because that row is already private, re-keyed by the claim, erased by the deletion
+cascade, counted as game data and part of the owner's export; a new table would need all of that
+wiring again. The tombstone is the one place the claim copies instead of moving: without it the
+retired guest would be granted a second starter and kit, and could redo a finished quest. Making the
+kit untradeable would need a new item field and a trade rule, and would not stop one player farming
+throwaway identities on its own: each fresh identity already gets a tradeable starter monster. How
+the official server keeps those payouts from reaching a main identity is an open launch condition
+(the economy worksheet's shared-economy caveat).
 
-**Rules out.** Inferring "new player" from owned monsters, items or a wallet row. A re-grant for
-an identity that holds the marker and owns no monster: a release or loss mechanic added later
-must bring its own floor rule. Content (dialogue or quest) that tests, sets or clears a `sys:`
-flag. Granting part of a kit, or clamping it at a cap. Accepted consequence: the retired guest's
-tombstone (the reserved flags and quest ids, keyed by the retired guest identity) is not erased
-by the claiming account's deletion cascade, which erases rows under the account's own identity.
+**Rules out.** Inferring "new player" from owned monsters, items or a wallet row. A re-grant for an
+identity that holds the marker and owns no monster: a release or loss mechanic added later must
+bring its own floor rule. Content (dialogue or quest) that tests, sets or clears a reserved flag.
+Granting part of a kit, or clamping it at a cap. Accepted consequence: the retired guest's tombstone
+(the reserved flags and quest ids, keyed by the retired guest identity) is not erased by the
+claiming account's deletion cascade, which erases rows under the account's own identity.
+
+The kit file, the marker, the grant rule and the content lint: `ARCHITECTURE.md` "Accounts
+lifecycle", The starter.
 
 ## A player's tag is a minted sequence value: private at rest, mirrored on the public player row while online
 
 **Decision.** Names are free and not unique, so each identity gets a discriminator, shown as a tag
-beside the name, that tells same-named players apart. It lives in the private `player_handle` table
-(`owner_identity` primary key, `discriminator: u32` `#[unique] #[auto_inc]`). `join_game` finds the
-caller's row or mints one (insert 0, the column's sequence assigns the value) and copies the value
-onto the public `player` row it inserts (`player.discriminator`; 0 means no tag). `onboarding.rs`
-owns the table (`ensure_handle`, `rekey_handle`, `erase_handle`, `has_handle`). The value is never
-0, never derived from the identity, never held by two identities at once and never minted twice: a
-sequence only grows, so a deleted handle's value is not minted again. The guest claim moves the row
-to the account with its value unchanged (`rekey_all`), and a handle counts as game data, so an
-account that already holds one cannot claim (`account_has_game_data`). A claimed guest identity that
-joins again is minted a different value. The deletion cascade erases the handle and zeroes
-`discriminator` and `lead_level` on the surviving `player` row beside the tombstone name. The
-owner's data export carries the handle row. A mint the datastore refuses (an exhausted sequence)
-refuses the join with `handle unavailable` before any presence row is written. `player.lead_level`
-is the second public column on that row: the stored level of the owner's lead party monster, 0 with
-no party. `battle::refresh_lead_level` keeps it equal to that level and writes the row only when the
-value differs. The dual-write seam (`monster_mgmt::update_monster_synced`) calls it when a write
-changes a monster's `level` or `party_slot`; `join_game` and the session-trade transfer
-(`trading_session::apply_swap`) call it themselves. The cascade zeroes it. The client keeps the two
-columns apart from the name: `StorePlayer` carries `discriminator` and `leadLevel`, and
-`StorePlayer.name` is the raw name. `client/src/ui/playerTag.ts` is the one place a tag is
-formatted: `formatTag(discriminator)` gives `#` and the number padded to at least four digits
-through the catalog key `identity.tag` (no tag for 0), and `taggedName(players, identity)` joins the
-name and the tag through `identity.taggedName` (`Drew #0042`). Three surfaces show the tag: the
-Social screen's Players row (name, tag, lead level, Nearby, each its own element; the tag in the
-muted text colour `--mr-text-muted`, which the accessibility suite checks in both themes, except on
-the cursor row; the level through the battle HUD's `tactics.hud.level` copy so it reads the same in
-both places, and none for 0), the incoming trade and challenge request banner, and the Trades-tab
-session row. Every other surface shows the name alone: the tactical battle clock, the trade editor
-heading, the rename view, the Rankings tab. `playerName` (`client/src/ui/tradeSessionModel.ts`)
-shows `#` and the first eight hex digits of the identity when the store holds no row for it or the
-row's name is empty. That fallback is not a tag: `validate_name` refuses an empty name at join and
-rename, so only an identity the store does not hold reaches it, and that identity has no tag to
-show.
+beside the name, that tells same-named players apart. A join finds the caller's private handle row
+or mints one from a sequence, and copies the value onto the public player row it inserts (0 means no
+tag). The value is never 0, never derived from the identity, never held by two identities at once
+and never minted twice. The guest claim moves the handle with its value; a handle counts as game
+data, so an account that already holds one cannot claim, and a claimed guest identity that joins
+again is minted a different value. The deletion cascade erases the handle and zeroes the tag and the
+lead level on the surviving player row. A mint the datastore refuses refuses the join before any
+presence row is written. The player row's second public column is the stored level of the owner's
+lead party monster (0 with no party), kept equal to it by every write that changes a monster's level
+or party slot. The client keeps the tag apart from the name and formats it in one place. Three
+surfaces show it: the Social screen's Players row, the incoming trade and challenge request banner,
+and the Trades-tab session row; every other surface shows the name alone.
 
-**Why.** The `player` row is deleted at every disconnect and is not re-keyed by the claim, so a
-value stored only there would be re-minted each session. A public `player_handle` would list every
-identity that ever joined, offline ones included; the mirror shows a tag only while its owner is
-online. `profile` rows exist only after a first rated game. A sequence value needs no collision
-retry and cannot be forged to match another player's; the accepted cost is that a tag reveals
-roughly how many identities joined before it. Zeroing the mirror at deletion keeps the tombstoned
-row from being linked back to a tag another player saw. The lead level is a stored column, not a
-view: another player's monsters are private (`monster_pub` is read only through the owner's view),
-and a view over `monster` evaluated for each subscriber would be recomputed on every monster change.
-The tag disambiguates where a player picks another player out of a list or answers a request from
-one; in a battle and in the world the name alone reads as part of the game (the operator's ruling,
+**Why.** The player row is deleted at every disconnect and is not re-keyed by the claim, so a value
+stored only there would be re-minted each session. A public handle table would list every identity
+that ever joined, offline ones included; the mirror shows a tag only while its owner is online.
+Profile rows exist only after a first rated game. A sequence value needs no collision retry and
+cannot be forged to match another player's; the accepted cost is that a tag reveals roughly how many
+identities joined before it. Zeroing the mirror at deletion keeps the tombstoned row from being
+linked back to a tag another player saw. The lead level is a stored column, not a view: another
+player's monsters are private (their projection is read only through the owner's view), and a view
+over monsters evaluated for each subscriber would be recomputed on every monster change. The tag
+disambiguates where a player picks another player out of a list or answers a request from one; in a
+battle and in the world the name alone reads as part of the game (the operator's ruling,
 <https://github.com/mdrewt/monster-realm/issues/588>), so the tag is a display join and never part
 of the stored name. The Players row is built from parts so the player-chosen name stays isolated in
 its `<bdi>` and out of the catalog resolver; the one-line banner and session row are plain text, so
 they take the catalog join.
 
 **Rules out.** Enforced-unique names. Deriving the tag from the identity (it would change at the
-claim, or collide after it). Storing the tag only on `player` or `profile`. A public handle table or
-a view that serves another player's handle. Reissuing an erased value. Minting anywhere but
-`join_game`'s success path (a refused or deletion-gated join mints nothing). Changing a monster's
-`level` or `party_slot` outside the dual-write seam without calling `battle::refresh_lead_level`:
-the column would stay stale until the owner's next seam write or join. Folding the tag into
-`StorePlayer.name` at the row converter (every name-only surface would show it), and building the
-tag text or the name-and-tag join by concatenation outside `playerTag.ts`. Accepted consequence: the
-`u32` sequence is one finite, shared resource (about 4.3 billion identities) that guests, who are
-never reaped, also draw from; once it is spent every identity without a handle is refused at join.
-Also accepted: any client sees each online player's lead level and its changes as they happen
-(reorders, boxing, level-ups), because the operator chose the lead level for the Players row;
-bucketing the value is the remedy if a playtest finds that matters. A tag tells identities apart,
-not people: anonymous identities cost nothing to mint. And the tag links a claimed guest to its
-account for anyone who saw the guest's tag, which is the ruling's intent; deletion zeroes the tag on
-the surviving row only, not in another player's memory or screenshots.
+claim, or collide after it). Storing the tag only on the player or profile row. A public handle
+table or a view that serves another player's handle. Reissuing an erased value. Minting anywhere but
+a join's success path (a refused or deletion-gated join mints nothing). Changing a monster's level
+or party slot without refreshing the lead level: the column would stay stale until the owner's next
+such write or join. Folding the tag into the client's stored name (every name-only surface would
+show it), and building the tag text or the name-and-tag join by concatenation outside the one
+formatting module. Accepted consequence: the `u32` sequence is one finite, shared resource (about
+4.3 billion identities) that guests, who are never reaped, also draw from; once it is spent every
+identity without a handle is refused at join. Also accepted: any client sees each online player's
+lead level and its changes as they happen (reorders, boxing, level-ups), because the operator chose
+the lead level for the Players row; bucketing the value is the remedy if a playtest finds that
+matters. A tag tells identities apart, not people: anonymous identities cost nothing to mint. And
+the tag links a claimed guest to its account for anyone who saw the guest's tag, which is the
+ruling's intent; deletion zeroes the tag on the surviving row only, not in another player's memory
+or screenshots.
+
+The handle table, the lead-level writers and the client's formatter and surfaces: `ARCHITECTURE.md`
+"Accounts lifecycle", Tags and lead level.
 
 ## Account deletion and data export
 
-**Decision.** Every table is classified once in `schema::DATA_LIFECYCLE_MANIFEST`
-(Erase / Anonymize / ViaJoin / NotOwned, a written basis, and whether it is
-exportable). A test compares the manifest with the generated module definition's
-table set, so a missing or stale entry fails. `delete_account` sets
-`PendingDeletion` and arms a one-shot reaper for `DELETION_GRACE_MS_DEFAULT` (7 days,
-`game-core/src/accounts/deletion.rs`); `cancel_account_deletion` reverses it. When
-the reaper fires, the cascade force-resolves live interactions first, forces ongoing
-battles naming the account to a terminal result, erases or anonymises per the
-manifest, and stamps `terminal_at_ms`. `Anonymize` also covers `leaderboard_top`, which
-holds only an identity its anonymized `profile` row keeps: the cascade re-derives it after
-tombstoning the name instead of overwriting it. A deletion-pending caller cannot open new
-commitments: 25 reducer call sites call `guards::require_not_deleting`, while
-commitments that predate the request stay completable. `request_data_export` writes
-private `export_bundle` chunks (`EXPORT_CHUNK_ROWS` 500) for `my_export_bundle`, gives
-each live bundle a unique creation stamp (rejecting under contention), admits requests
-against a global live-row cap that is halved for callers without an account and
-halved again for callers without a wallet, and a reaper deletes chunks older
-than 7 days, within an hour of their expiry (`server-module/src/privacy.rs`).
+**Decision.** Every table is classified once in the schema's data-lifecycle manifest (erase,
+anonymize, via a join, or not owned; a written basis; exportable or not), and a test holds the
+manifest to the generated module definition's table set, so a missing or stale entry fails.
+Deletion is a request the account can cancel during a 7-day grace period; then the cascade
+force-resolves live interactions, forces ongoing battles naming the account to a terminal result,
+and erases or anonymises per the manifest. A table that holds only what an anonymized row keeps, the
+leaderboard's membership, is re-derived after the name is tombstoned, not overwritten. A
+deletion-pending caller cannot open new commitments, while commitments that predate the request
+stay completable. An export is written as private chunks the owner reads back; each live bundle has
+a unique creation stamp, requests are admitted against a global live-row cap that is halved for
+callers without an account and halved again for callers without a wallet, and a bundle is deleted
+within an hour of its 7-day expiry.
 
-**Why.** A new table must not silently keep personal data after a deletion, so its
-classification is part of the schema. Blocking new commitments during the grace
-period stops a deleting account from laundering assets to a confederate. The export
-caps and tiers bound storage abuse, with anonymous identities limited before account
-holders. The starter kit's currency creates the wallet row at an identity's first join, and
-only an identity with a `player` or `account` row can request an export, so the no-wallet tier
-holds almost no caller and a join alone reaches the anonymous tier. The wallet signal stays:
-any per-identity signal an anonymous identity can earn is cheap, and sign-in is the fix. A
-configured real sign-in issuer (`PRODUCTION_LOGIN_ISSUERS` in `server-module/src/accounts.rs`,
-today the fail-closed placeholder; the gate reads that list, not the build's own
-`ALLOWED_ISSUERS`) is therefore a launch condition for the official server. Until then no
-caller has an account, so no caller reaches the account holders' ceiling, and identities that
-each earn a wallet row can keep the anonymous tier full: other players' export requests are
-refused for as long as those identities keep re-exporting, and for up to the 7-day retention
-after they stop (R-rb-132-WALLETSYBIL). The operator accepted that exposure until launch
-(monster-realm#757).
+**Why.** A new table must not silently keep personal data after a deletion, so its classification
+is part of the schema. Blocking new commitments during the grace period stops a deleting account
+from laundering assets to a confederate. The export caps and tiers bound storage abuse, with
+anonymous identities limited before account holders. The starter kit's currency creates the wallet
+row at an identity's first join, and only an identity with a player or account row can request an
+export, so the no-wallet tier holds almost no caller and a join alone reaches the anonymous tier.
+The wallet signal stays: any per-identity signal an anonymous identity can earn is cheap, and
+sign-in is the fix. A configured real sign-in issuer (today the production issuer list holds a
+fail-closed placeholder) is therefore a launch condition for the official server. Until then no
+caller has an account, so no caller reaches the account holders' ceiling, and identities that each
+earn a wallet row can keep the anonymous tier full: other players' export requests are refused for
+as long as those identities keep re-exporting, and for up to the 7-day retention after they stop.
+The operator accepted that exposure until launch (monster-realm#757).
 
-**Export scope.** The export is for the data held about the person. Game state is
-included where a query on existing tables provides it; it is assembled from the tables
-the game already keeps, and nothing is stored for the export's sake. A row that only
-duplicates exported state, or exists only between sessions, may stay out with its
-reason in the manifest's `basis` (`last_position` is one).
+**Export scope.** The export is for the data held about the person. Game state is included where a
+query on existing tables provides it; it is assembled from the tables the game already keeps, and
+nothing is stored for the export's sake. A row that only duplicates exported state, or exists only
+between sessions, may stay out with its reason in the manifest's basis (the saved position is one).
 
-**Rules out.** An unclassified table; deleting before the grace period ends; an export
-path any other player can read; a table or column added only so the export can carry it.
+**Rules out.** An unclassified table; deleting before the grace period ends; an export path any
+other player can read; a table or column added only so the export can carry it.
+
+The reducers, the reapers, the guard and the chunking: `ARCHITECTURE.md` "Accounts lifecycle",
+Deletion and Export.
 
 ## Battles run on one engine at a time; the tactical cutover was a flip, not a toggle
 
-**Decision.** The two live battle starts — the grass trigger in `movement_tick` and
-`accept_challenge` — call the tactical writers (`tactics::start_wild_tactical`,
-`tactics::start_pvp_tactical`) and nothing else. The switch happened in one slice (bt-16)
-together with the deletion of the dev-gated tactical starts and the migration of every
-battle e2e. bt-17 then deleted the 1v1 engine from the module: `start_battle` (which had stayed
-client-callable through the flip), `submit_attack`, `swap_active`, `flee`, `use_battle_item`,
-`attempt_recruit`, `submit_pvp_action`, `begin_encounter`, the dev-only `start_wild_battle`, the
-60 s secret-pick deadline arming and the 1v1-only guards are gone (the generated bindings and
-`client-callable-reducers.json` carry none of them), as are the client's 1v1 renderer, model,
-dispatch arms and copy. What stays of the 1v1 engine is deliberate. The server
-module keeps the write-back, terminal-sweep, faint-penalty and disconnect helpers the tactical
-settle funnel calls. `marshal.rs` has no 1v1 row→`BattleMonster` marshaling helper and
-`content_cache.rs` no 1v1 skill, ability or type-chart cache: a helper only its own tests call is
-dead code, not a fallback engine. `game-core/src/combat/` follows the same rule. It holds the
-types stored in `Battle.state` and the content rows, and the rules a production
-path calls: the damage formula and accuracy check, the type chart, lead selection, the status
-countdown, the XP rules, and the PvP forfeit and challenge rules. Everything else in it (the
-turn driver in `combat/resolve.rs`, the enemy skill picker, the entry-ability hooks, the weather
-chip and countdown) has no production caller, and `docs/refactors/combat-carried-rules.md`
-lists what is left to remove and in what order. The tactical engine calls a carried rule itself. Where the
-rule's signature takes the 1v1 `BattleState`, the engine states it once in `tactics/`, pinned by
-tests that hold literal expected values. A test of a removed rule goes with it, naming the
-removed function or the surviving test of the rule it carried; a test that executes no product
-function is no check and goes for that reason. The module declares
-no 1v1 table, reducer or pick type: `battle_action`, `battle_wild`, `pvp_deadline_schedule`, the
-scheduled `pvp_deadline_reaper` and `PvpAction` went in a schema consolidation (see "Schema
-changes are additive"), and tests over the generated module definition hold that none of them
-is declared.
+**Decision.** Both live battle starts, a grass encounter and an accepted challenge, open a tactical
+battle and nothing else. The module declares no 1v1 table, reducer or pick type, and tests over the
+generated module definition hold that none is declared. What stays of the 1v1 engine is what a
+production path calls: the server keeps the write-back, terminal-sweep, faint-penalty and disconnect
+helpers the tactical settlement calls, and game-core's combat module keeps the types stored in the
+battle anchor, the content rows, and the carried rules (the damage formula and accuracy check, the
+type chart, lead selection, the status countdown, the XP rules, and the PvP forfeit and challenge
+rules). A helper or rule only its own tests call is dead code, not a fallback engine;
+`docs/refactors/combat-carried-rules.md` lists what of it is left to remove and in what order. The
+tactical engine calls a carried rule itself; where the rule takes the 1v1 battle state, the engine
+states it once in its own module, pinned by tests that hold literal expected values. A test of a
+removed rule goes with it, naming the removed function or the surviving test of the rule it
+carried; a test that executes no product function is no check and goes for that reason.
 
-**Why.** Two engines reachable at once would need a per-battle discriminator in every
-guard, settlement and client renderer, and a runtime toggle is exactly the surface a
-hostile client would flip. One engine per path keeps `guards::is_in_ongoing_battle`,
-the settlement funnels and the battle frame single-sourced, and compiling the old
-engine through the flip let the client keep typechecking so the purge could delete the
-client side first and de-attribute the server side in the same slice. A 1v1 rule only its tests
-call is paid for by every change to a stored type (its tests build `BattleMonster` and
-`BattleSide` by hand) and by every gate that has to cover it, and it reads as a second
-engine. The entry-ability and weather functions take the 1v1 active-slot state, which the grid
-has no equivalent of, so a depth wave could use them only as a test oracle for one-line
-formulas. The wave states its rule on `TacticalState` from the values the plan file records,
-and `calc_damage` already carries the Rain and Sun modifier through its `weather` parameter.
+**Why.** Two engines reachable at once would need a per-battle discriminator in every guard,
+settlement and client renderer, and a runtime toggle is exactly the surface a hostile client would
+flip. One engine per path keeps the battle guards, the settlement funnel and the battle frame
+single-sourced, and compiling the old engine through the flip let the client keep typechecking so
+the purge could delete the client side first. A 1v1 rule no production path calls reads as a second
+engine, and every change to a stored battle type has to carry it. The entry-ability and weather
+functions take the 1v1 active-slot state, which the grid has no equivalent of, so a depth wave could
+use them only as a test oracle for one-line formulas. The wave states its rule on the tactical state
+from the values its plan records, and the damage formula already carries the Rain and Sun modifier
+through its weather parameter.
 
-**Rules out.** A feature flag or config row selecting the engine; starting a tactical
-battle through a dev-only reducer in any shipped build; a 1v1 table or reducer brought back
-as a fallback.
-In `combat/`: a 1v1 rule kept as the source for a later wave or as the expected value of a
-tactics test; a second copy of a rule the engine can call; keeping a test that executes no
-product function until a survivor is found for it.
+**Rules out.** A feature flag or config row selecting the engine; starting a tactical battle through
+a dev-only reducer in any shipped build; a 1v1 table or reducer brought back as a fallback. In the
+combat module: a 1v1 rule kept as the source for a later wave or as the expected value of a tactics
+test; a second copy of a rule the engine can call; keeping a test that executes no product function
+until a survivor is found for it.
+
+The two writers and the combat module's callers: `ARCHITECTURE.md` "game-core: the rule layer" and
+"server-module: the authority", Layout.
 
 ## Dev-only reducers never ship
 
-**Decision.** The dev reducers `grant_bait` and `dev_expire_tactical_window` compile only with
-the `dev_reducers` feature (`server-module/Cargo.toml`). `dev_place_in_load_zone` compiles only
-with `load_test_zones`, which implies `dev_reducers`. Neither feature is ever in `default`.
-`dev_reducers` implies `open_join`, and `default` holds `open_join` and no dev-reducer feature. A
-release feature (`official` or `world`) together with a dev-reducer feature does not compile, and
-`just release-module` refuses an artefact that names a dev reducer.
-The playtest recipes publish the default build, which is the test build (see "Ownership is
-enforced unless a dev feature switches it off"), and then check the *published* module with
-`spacetime describe --json` (`scripts/verify-release-reducers.mjs`, whose
-`FORBIDDEN_REDUCERS` lists every dev reducer name, so a new dev reducer joins it in the
-change that adds it), and check that the production client bundle contains no DEV debug
-hooks (`scripts/verify-build-hooks.mjs`). The committed client bindings are generated from
-the default build, so they hold no dev reducer, and the `bindings-drift` eval fails if one
-appears. No dev reducer starts a battle: the e2e drives every battle through the
-player-reachable flows. `dev_expire_tactical_window` is callable only by the module owner
-(the `config` row's `owner_identity`, the check `sync_content` makes), so a player is
-refused even in a dev build. It moves the open turn window's deadline to the call's time and
-arms one deadline fire there; the scheduler's own `tactical_deadline_fire` expires the
-window as at a real deadline. An e2e may expire a window through it instead of waiting, and
-a test that does so keeps one real-time expiry in the same test.
+**Decision.** A dev reducer compiles only behind a dev feature that is never in the default build
+and that turns on anonymous join with it; a release feature together with a dev feature does not
+compile, and the release recipe refuses an artefact that names a dev reducer or whose profile
+compiles one. The playtest recipes check the *published* module's reducer list and that the
+production client bundle holds no debug hooks, and the committed client bindings, generated without
+a dev feature, hold no dev reducer. No dev reducer starts a battle: the e2e drives every battle
+through the player-reachable flows. A dev reducer acts only on the caller's own state, except the
+turn-window expiry, which only the module owner may call, even in a dev build. That reducer moves
+the open window's deadline of the side it names to the call's time and lets the real scheduler
+expire it; it refuses a call that finds the other side's window open, so a slow test cannot strike
+the wrong player. An e2e may expire a window through it instead of waiting, and a test that does so
+keeps one real-time expiry. The load-zone placement exists only in the load-test build. A change
+that adds a dev reducer joins every check that lists dev code and keeps everything it adds behind
+its feature; a dev caller reaches a private production function through a dev-gated forwarder and
+never widens the function itself.
 
-`dev_expire_tactical_window` names the side whose window it expires and refuses a call that finds
-the other side's window open, so a slow test cannot strike the wrong player. It acts on any Active
-tactical battle, wild, PvP or Practice; a wild expiry is the AutoFlee a real deadline gives. It
-refuses a Deploying or Finished battle.
-
-`dev_place_in_load_zone` exists only in the load-test build: `load_test_zones`, which `just
-load-host` publishes to a `monster-realm-load-zones*` database on a loopback host (a remote one
-only with `MR_LOAD_ALLOW_REMOTE=1`). That build also
-appends game-core's 100 generated zones to the zone, zone-map and tactics-zone registries. The
-zones are 16×16 floor with ids 10000–10099 (`game-core/src/load_test_zones.rs`). Any caller may
-call the reducer, but only for itself. It moves the caller's own character to a load zone's spawn
-tile as the tick's warp arm moves a character. The character arrives Idle, its queued moves are
-cleared and published with the seq kept, and the zone's tick is armed. The reducer refuses an id
-outside the band, a caller with no character or move intent row, and a caller in an ongoing
-battle. The load driver
-(`mr_load_driver --zones`) calls it once per bot after the join, to spread its bots over the
-zones. The browser client is not supported in a load zone: its wasm has no load-zone map, so it
-cannot predict there. A change that adds a dev reducer must also:
-
-- call the deletion gate first;
-- join the census's `EXPECTED_GATED` (`privacy_enforcement_tests.rs`), and, when it adds a module,
-  `EXPECTED_MODULES`. That module's `mod` line carries no `cfg`, because the census refuses every
-  `cfg` but `cfg(test)`, so the feature gate goes on the module's items;
-- add `exclude_re` keys for its surviving mutants to `.cargo/mutants.toml` entry 8;
-- keep every item it adds behind its feature. The default game-core build compiles no new function
-  for a dev or load feature. A game-core loader reaches gated code through a macro on the loader's
-  existing line, whose feature-off arm expands to the loader's original expression
-  (`load_test_zones::zones!`).
-
-A dev caller reaches a private production function through a dev-gated forwarder
-(`tactics.rs` `dev_arm_deadline`). It never widens the function itself.
-
-**Why.** A dev reducer in a real deployment is an exploit: free items, or expiring another
-player's turn window. Checking the published module rather than the source catches a wrong
-build flag in the publish path, which a source grep would not. A test that waits real
-deadlines spends a full turn window per expiry (30 s in PvP); overriding `now` would open later
-windows ahead of real time, so the reducer moves one deadline and leaves every timestamp real.
-One real-time expiry per test keeps the real scheduler covered by the two-browser flow.
-
-What keeps dev code out of a release is checked on the artefact and by the compiler: the
-published-module check, `just release-module`'s refusal of an artefact that names a dev reducer or
-whose profile compiles one, the census rows, and the compile error for a release feature named
-with a dev-reducer feature. A change that adds a dev reducer does not have to leave the default
-build's bytes unchanged. Accepted: dev code that is not a reducer and escapes its feature gate
-changes the default build without any of those checks seeing it; review of the gate is what
-catches it.
+**Why.** A dev reducer in a real deployment is an exploit: free items, or expiring another player's
+turn window. Checking the published module rather than the source catches a wrong build flag in the
+publish path, which a source grep would not. A test that waits real deadlines spends a full turn
+window per expiry (30 s in PvP); overriding `now` would open later windows ahead of real time, so
+the reducer moves one deadline and leaves every timestamp real. One real-time expiry per test keeps
+the real scheduler covered by the two-browser flow. What keeps dev code out of a release is checked
+on the artefact and by the compiler: the published-module check, the release recipe's refusal, the
+reducer census and the compile error for a release feature named with a dev feature. A change that
+adds a dev reducer does not have to leave the default build's bytes unchanged. Accepted: dev code
+that is not a reducer and escapes its feature gate changes the default build without any of those
+checks seeing it; review of the gate is what catches it.
 
 **Rules out.** Runtime flags for dev reducers; trusting the source tree as proof of what was
-published; a dev reducer a player can call to act on anything but the caller's own state
-(`grant_bait` and `dev_place_in_load_zone` act on the caller's own;
-`dev_expire_tactical_window` is owner-only); a fake or overridden clock for tests; an e2e that
-takes every expiry through the dev path; a `cfg(feature)` module line; widening a
-production function's visibility for a dev caller; requiring a build's bytes or its source layout
-to stay fixed as proof that dev code did not ship (it shapes production source around a hash).
+published; a dev reducer a player can call to act on anything but the caller's own state; a fake or
+overridden clock for tests; an e2e that takes every expiry through the dev path; a `cfg(feature)`
+module line; widening a production function's visibility for a dev caller; requiring a build's
+bytes or its source layout to stay fixed as proof that dev code did not ship (it shapes production
+source around a hash).
+
+The features, the three dev reducers, the published-module check and the checklist for a new one:
+`ARCHITECTURE.md` "server-module: the authority", Dev and load-test builds.
 
 ## SpacetimeDB versions move in lockstep
 
-**Decision.** The spacetime CLI/host and the Rust `spacetimedb` crate are pinned to
-the same version (2.16.1: root `Cargo.toml`, `SPACETIME_VERSION` in `scripts/ci-tools.sh`).
-AMENDED 2026-10-15 (deps-s3): the npm `spacetimedb` SDK now joins the lockstep
-(`^2.16.1`, locked in `client/package-lock.json`). It was previously held separate
-(at 2.6.0) because newer SDKs change reconnect behaviour; since 2.7.0 the vendor
-ships CLI/crate/SDK from one monorepo on the same day with no documented skew
-matrix, so same-version-everywhere is the only documented-safe configuration. An
-SDK bump still requires the live two-client e2e the old rule demanded.
-`scripts/ci-tools.test.mjs` holds the resolved crates (`cargo metadata`), the locked npm SDK and the
-generated bindings to one version; `bindings-drift` holds the bindings to the CLI on PATH, which CI
-installs from `SPACETIME_VERSION`.
-Module code uses 2.x syntax (`#[table(accessor = x)]`, `ctx.sender()`). Upgrades
-follow `docs/runbooks/spacetimedb-upgrade.md`. The nightly `smoke-republish` job
-republishes over live data without `--delete-data` and checks that the data survives.
+**Decision.** The spacetime CLI and host, the Rust `spacetimedb` crate and the npm `spacetimedb` SDK
+are pinned to one version, and checks hold the resolved crates, the locked SDK and the generated
+bindings to it. An SDK bump needs the live two-client e2e. Upgrades follow the upgrade
+runbook. A nightly job republishes over live data without deleting it and checks that the data
+survives.
 
-**Why.** The crate version is the product version: a crate/CLI mismatch changes the
-generated bindings and the wire format. A schema change the automatic migration cannot
-apply (reordering or removing columns, renamed enum variants) only shows up when
-publishing over real data, so it has to be tested there.
+**Why.** The crate version is the product version: a crate/CLI mismatch changes the generated
+bindings and the wire format. The vendor ships the CLI, the crate and the SDK from one repository
+on the same day with no documented skew matrix, so the same version everywhere is the only
+documented-safe configuration. A newer SDK can change reconnect behaviour, so an SDK bump is
+proved on two live clients. A schema change the automatic migration cannot apply (reordering or removing
+columns, renamed enum variants) only shows up when publishing over real data, so it has to be
+tested there.
 
-**Rules out.** Bumping the crate without the CLI (or the reverse); inserting a column
-anywhere but the end; removing a column or reordering enum variants on a live
+**Rules out.** Bumping the crate without the CLI (or the reverse);
+inserting a column anywhere but the end; removing a column or reordering enum variants on a live
 database without planning a `--delete-data` republish.
+
+The pins, the checks and the nightly job: `ARCHITECTURE.md` "server-module: the authority",
+Working with SpacetimeDB.
 
 ## The crate's `unstable` feature is on; the generated definition is checked instead
 
 **Decision.** The workspace's `spacetimedb` dependency enables the crate's `unstable` feature
-(operator, 2026-11-22), and the module uses nothing it gates: its procedures and their HTTP
-client (`server-module/src/account_checks.rs`) are outside the feature. At 2.16.1 the feature gates HTTP
-handlers and routes (`spacetimedb::http::{handler, router, HandlerContext}`), row filters
-(`client_visibility_filter`, `Filter`), `volatile_nonatomic_schedule_immediate!` and a unique
-column's `insert_or_update`/`try_insert_or_update`; procedures, their transactions and their HTTP
-client are not behind it (`docs/spacetimedb-2.16.md`). What keeps a handler, a route or a row
-filter out of the module is a check of the generated module definition, not the feature: `findDefinitionViolations` in `scripts/verify-release-reducers.mjs`
-refuses each, at any submodule depth, and any section kind it does not know, on the default build
-(`just module-definition`, in `just ci`) and on every artefact `just release-module` makes. The
-same check refuses any procedure but the three account checks and any schedule but the module's
-own, and the reducer census refuses a `procedure` attribute outside `account_checks.rs`. Nothing checks the immediate-schedule call or
-`insert_or_update`, which are calls, not declarations: review keeps them out. The scheduled call is
-the one that matters to the access design. The host queues it when the call runs, so it runs even if
-the calling reducer then fails, and it runs as the database identity, so it passes every
-scheduler-only guard (`crates/core/src/host/scheduler.rs:262-267, 953-971` at tag `v2.16.1`).
-Measured on 2.16.1 (default build): the
-feature adds one export, `__call_http_handler__`, and 76,336 bytes (3,480,052 to 3,556,388); the
-imports and the definition's sections are the same with it off and on, and the native test binary
-links with it (`lpw34_7_unstable` in `server-module/src/privacy_enforcement_tests.rs`).
+(operator, 2026-11-22), and the module uses nothing it gates; procedures, their transactions and
+their HTTP client are outside it. What keeps an HTTP handler, a route or a row filter out of the
+module is a check of the generated module definition, not the feature: it refuses each, at any
+submodule depth, and any section kind it does not know, on the default build in the merge gate and on every
+release artefact. The same check refuses any procedure but the world's own account checks and any
+schedule but the module's own, and the reducer census refuses a procedure outside the account-check
+module. Nothing checks the immediate-schedule call or a unique column's insert-or-update, which are
+calls, not declarations: review keeps them out. The immediate-schedule call is the one that matters
+to the access design: the host queues it when the call runs, so it runs even if the calling reducer
+then fails, and it runs as the database identity, so it passes every scheduler-only guard. What the
+feature gates at the pinned version and what it adds to the built module (one export; the imports
+and the definition unchanged) are measured in `docs/spacetimedb-2.16.md`.
 
 **Why.** A slice that uses one of these APIs then measures only that API, against a module already
 built and tested with the feature on. The guarantee the access design needs (no route the host
-serves without the connect reducer, no row filter) is a property of what the module declares, and
-a check of the declaration holds it whatever the feature list says; a declaration behind a release
+serves without the connect reducer, no row filter) is a property of what the module declares, and a
+check of the declaration holds it whatever the feature list says; a declaration behind a release
 feature is invisible to the test build, hence the check on each release artefact.
 
 **Rules out.** Turning the feature off to keep those APIs out (the check is the guard); a
 declaration of a handler, a route or a row filter without a slice that changes the check and
-`docs/local-play.md` §3; a call of `volatile_nonatomic_schedule_immediate!` from a reducer a client
-can call; a host older than 2.14.0 for this module, since such a host rejects the
-`__call_http_handler__` export with the signature the 2.14.0 crate and later emit (it gained the
-sender and the JWT; vendor release notes, 2.14.0).
+`docs/local-play.md` §3; a call of the immediate-schedule macro from a reducer a client can call; a
+host older than 2.14.0 for this module, since such a host rejects the HTTP-handler export with the
+signature the 2.14.0 crate and later emit (it gained the sender and the JWT; vendor release notes,
+2.14.0).
+
+The definition check, its allow-lists and where it runs: `ARCHITECTURE.md` "Verification layout".
 
 ## Server-module tests run on our own host ABI, over the two vendor crates patched where they refuse a native host
 
-**Decision.** The module's native tests keep the in-memory host in
-`server-module/src/native_host_tests.rs`, which defines the SpacetimeDB host ABI itself. From crate
-2.12.0 the vendor refuses a native host twice: `spacetimedb-bindings-sys` defines the ABI as stubs,
-and `spacetimedb`'s table backend stops calling it off wasm. So the workspace builds both crates
-from copies of their crates.io packages under `vendor/`, through `[patch.crates-io]`, changed only
-by `#[cfg]` attributes that send native code down the branch wasm takes, each with a change notice
-(`vendor/native-host.patch`). A procedure runs natively through more such attributes: its
-transactions and its HTTP client reach the host's `procedure_*` functions, which put an aborted
-transaction's rows back and answer each request from a queue the test stubs, so a procedure's
-request opens no connection (`Fixture::run_procedure`). `ProcedureContext::sleep_until` refuses
-natively: a native test of a procedure that sleeps adds two more such attributes and a
-`procedure_sleep_until` to the host. A test (`nh_vendored_crates_are_the_crates_io_release_plus_the_patch`)
-proves each copy, with the patch undone, matches the hashes recorded from the crates.io release
-(`vendor/PRISTINE.sha256`), and that every changed line is such an attribute, selecting on wasm
-what the original selected; every SpacetimeDB hop re-records them and re-applies the patch
-(`docs/runbooks/spacetimedb-upgrade.md`). CI's `cargo audit` skips packages not from crates.io, so
-these two are checked at each hop, in release notes and advisories, until CI audits them by name
-and version. Built at the hop to 2.12.0 and re-applied at 2.14.1 and 2.16.1 (`vendor/README.md`);
-the alternatives and the measurements behind the choice are in `docs/spacetimedb-2.16.md`
-("The vendor's unit-test harness").
+**Decision.** The module's native tests run on an in-memory host this repository defines, which
+implements the SpacetimeDB host ABI itself. From crate 2.12.0 the vendor refuses a native host
+twice: the bindings crate defines the ABI as stubs, and the main crate's table backend stops calling
+it off wasm. So the workspace builds both crates from copies of their crates.io releases, changed
+only by `#[cfg]` attributes that send native code down the branch wasm takes, each with a change
+notice. A procedure runs natively through more such attributes: its transactions put an aborted
+transaction's rows back, and its HTTP requests are answered from a queue the test stubs, so a test
+opens no connection. A native test of a procedure that sleeps adds two more such attributes and a
+host function. A test proves each copy, with the patch undone, matches the crates.io release, and
+that every changed line is such an attribute selecting on wasm what the original selected; every
+SpacetimeDB hop re-copies both crates, re-records their hashes and re-applies the patch. CI's dependency audit skips packages not from
+crates.io, so these two are checked at each hop, in release notes and advisories, until CI audits
+them by name and version. The alternatives and the measurements behind the choice are in
+`docs/spacetimedb-2.16.md` ("The vendor's unit-test harness").
 
 **Why.** The module's privacy and netcode rules are checked on what a transaction does as the host
 sees it: every write a subscriber is sent, an unchanged update included; each shipped view, run
@@ -1363,129 +1257,129 @@ write or read, the view entry point does not reach it, and a JWT-less connection
 It also puts the whole server, V8 and wasmtime included, into the test build. On wasm the changed
 attributes select what they selected before, so the module we ship is the vendor's code.
 
-**Rules out.** `test-utils` as the Fixture's host, until its datastore reports a transaction's writes
-and runs the shipped views; a linker flag that tolerates the duplicate symbols (the stubs win, and
-769 tests fail); switching off only the stubs, since the table backend still refuses; testing on an
-older crate than the one that ships; any edit to the copies beyond such attributes and their notices.
+**Rules out.** `test-utils` as the test host, until its datastore reports a transaction's writes and
+runs the shipped views; a linker flag that tolerates the duplicate symbols (the stubs win, and the
+tests that reach the host fail); switching off only the stubs, since the table backend still
+refuses; testing on an older crate than the one that ships; any edit to the copies beyond such
+attributes and their notices.
+
+The host, the copies, the patch and its guard test: `ARCHITECTURE.md` "Workspace" and "Verification
+layout".
 
 ## Schema changes are additive
 
-**Decision.** Between consolidations a schema change only adds. New columns go at the end of a
-table and carry an explicit `#[default]` (`i64` defaults are typed, e.g. `#[default(0i64)]`,
-because an untyped `0` encodes as 4 bytes and the publish fails). Illegal combinations of states
-that a column-type change would rule out are enforced by a checked predicate instead (for
-example `accounts::account_state_is_legal`). Whether a table is scheduled is fixed at first
-publish, so scheduled tables ship together with their reducer. A new table needs an entry in
-`schema::DATA_LIFECYCLE_MANIFEST` (a test fails otherwise). A new column on an exportable table
-breaks the compile of the exhaustive export fixtures in `server-module/src/privacy_tests.rs`,
-which forces an explicit export-or-omit decision in that table's serializer in `privacy.rs`. A
-table or column whose job has moved stays in place, unused, until a consolidation.
-
-A consolidation is a slice whose spec declares it. It removes what additive changes left unused
-in one break, and it ships with a wipe of every database (`docs/runbooks/playtest-ops.md`,
-"A schema consolidation"). It raises `MIN_CLIENT_PROTOCOL` to the new `PROTOCOL_VERSION`, so
-every client built before it is told to update the game. The two schema evals
-(`battle-schema-snapshot`, `spacetime-type-snapshot`) compare each baseline with its copy at the
-merge-base and refuse a removal, a reorder or a type change; they skip that comparison only when
-the working baseline carries a top-level `consolidation` key whose value is in the evals' own
-`DECLARED_CONSOLIDATIONS` list and which the merge-base copy lacks. `--write` never writes the
-key, so the next schema change drops it, and a key kept past that change fails the eval.
+**Decision.** Between consolidations a schema change only adds. New columns go at the end of a table
+and carry an explicit default. Illegal combinations of states that a column-type change would rule
+out are enforced by a checked predicate instead. Whether a table is scheduled is fixed at first
+publish, so a scheduled table ships together with its reducer. A new table is classified in the
+data-lifecycle manifest, and a new column on an exportable table forces an explicit export-or-omit
+decision in that table's export serializer. A table or column whose job has moved stays in place,
+unused, until a consolidation. A consolidation is a slice whose spec declares it. It removes what
+additive changes left unused in one break, ships with a wipe of every database, and raises the
+oldest client protocol the module serves to its new protocol number, so every client built before
+it is told to update the game. The schema snapshot checks refuse a removal, a reorder or a type
+change against the merge base, except for a consolidation the checks themselves declare, and the
+declaration lasts one schema change.
 
 **Why.** SpacetimeDB's automatic migration accepts only appended columns with defaults. Anything
 else needs `--delete-data`, which wipes every player. While no database holds data the game has
-promised to keep, a wipe costs nothing, and carrying dead tables into early access would cost
-every later reader of the schema, the deletion cascade and the export. So the unused parts go in
-declared breaks before early access, and the additive rule holds between them and after the
-last one.
+promised to keep, a wipe costs nothing, and carrying dead tables into early access would cost every
+later reader of the schema, the deletion cascade and the export. So the unused parts go in declared
+breaks before early access, and the additive rule holds between them and after the last one.
 
-**Rules out.** Mid-struct column inserts, column removals, and type changes on a live table
-outside a consolidation. A consolidation once a database holds player data the game keeps. A
-slice skipping the merge-base comparison on its own authority: the declared list lives in an
-eval file, which a slice edits only when its spec names that file.
+**Rules out.** Mid-struct column inserts, column removals, and type changes on a live table outside a
+consolidation. A consolidation once a database holds player data the game keeps. A slice skipping
+the merge-base comparison on its own authority: a consolidation is declared by its spec, never by
+the slice that runs it.
+
+The default encoding, the export fixtures, the wipe runbook and the snapshot checks' declared list:
+`ARCHITECTURE.md` "Schema and privacy model".
 
 ## The module publishes its protocol numbers; a publish that keeps data is followed by the owner's `sync_content`
 
-**Decision.** `game-core` holds `PROTOCOL_VERSION` and `MIN_CLIENT_PROTOCOL` (never above it), and
-`client-wasm` exports them as `protocol_version()` and `min_client_protocol()`. The module records
-both in row 0 of the public table `module_info`, from `init` and from the owner's `sync_content`
-whether or not the content changed. Every recipe and script in this repository that publishes over a
-database and keeps its data then calls `sync_content` as the publishing identity, and fails when
-that call is refused. `client/src/net/wireContract.test.ts` holds the generated bindings against one
-recorded entry per protocol number (`client/src/net/wireContract.json`): `PROTOCOL_VERSION` rises by
-one with any change to the entry, and `MIN_CLIENT_PROTOCOL` rises above every entry from it upward
-that the bindings break. Server to client, any difference in a table, view or type an entry holds
-breaks it, an appended column included; client to server, any change to a reducer or type it holds
-does, except a variant appended to a sum only an argument reaches. New tables, views, reducers and
-types break nothing.
+**Decision.** game-core holds the protocol number and the oldest client protocol the module serves
+(never above it), and the client reads both from its wasm. The module records both in the one row
+of a public module-info table, at database creation and at every owner's content sync whether or not
+the content changed. Every recipe and script in this repository that publishes over a database and
+keeps its data then runs the owner's sync as the publishing identity, and fails when that call is
+refused. A committed wire contract holds the generated bindings against one recorded entry per
+protocol number: the protocol number rises by one with any change to the entry, and the oldest
+served protocol rises above every entry from it upward that the bindings break. Server to client,
+any difference in a table, view or type an entry holds breaks it, an appended column included;
+client to server, any change to a reducer or type it holds does, except a variant appended to a sum
+only an argument reaches. New tables, views, reducers and types break nothing.
 
-**Why.** `init` runs only when a database is created, and nothing in the module runs when a new
-module is published over existing data, so the owner's call is what makes the row describe the
-module that is running, including after a publish that changed the schema and left the content
-alone, which the content-version check would skip. A client misled by the numbers fails silently: it
-misreads rows or sends calls the module cannot decode. Arguments and fields travel by position
-(BSATN), so an added, removed, reordered or re-typed one breaks an older client's call, while an
-appended variant only adds a tag no older client sends; the SDK builds a reducer event from the
-caller's own arguments, so no client decodes arguments. A renamed member counts as a change although
-no name travels: the bindings hold no other identity for it. From SDK 2.16.1 a client skips trailing
-columns its bindings lack (vendor #6091; measured on `module_info`, `docs/spacetimedb-2.16.md`), but
-not a field appended inside a named type, and a rule that told the two apart would have to model the
-SDK's decoder; counting a trailing top-level column as a break is the operator's choice (#873):
-nothing is deployed, so it costs nothing now, and it is revisited before early access, when every
-additive column would otherwise send every older client to update.
+**Why.** Database creation is the only time the module's init runs, and nothing in the module runs
+when a new module is published over existing data, so the owner's call is what makes the row
+describe the module that is running, including after a publish that changed the schema and left the
+content alone, which the content-version check would skip. A client misled by the numbers fails
+silently: it misreads rows or sends calls the module cannot decode. Arguments and fields travel by
+position (BSATN), so an added, removed, reordered or re-typed one breaks an older client's call,
+while an appended variant only adds a tag no older client sends; the SDK builds a reducer event from
+the caller's own arguments, so no client decodes arguments. A renamed member counts as a change
+although no name travels: the bindings hold no other identity for it. From SDK 2.16.1 a client skips
+trailing columns its bindings lack (vendor #6091; measured in `docs/spacetimedb-2.16.md`), but not a
+field appended inside a named type, and a rule that told the two apart would have to model the SDK's
+decoder; counting a trailing top-level column as a break is the operator's choice (#873): nothing is
+deployed, so it costs nothing now, and it is revisited before early access, when every additive
+column would otherwise send every older client to update.
 
 **Rules out.** Copying either number into TypeScript or into the server module. Refreshing the
 numbers below the content-version check, or from a reducer any caller may run. A recipe or script
 that publishes over kept data without the owner's call, or that ignores the call's exit status.
-Raising `MIN_CLIENT_PROTOCOL` for a change that breaks no entry (it sends every older client to
+Raising the oldest served protocol for a change that breaks no entry (it sends every older client to
 update the game for nothing). Rewriting an entry a merged change recorded, or deleting one at or
-above `MIN_CLIENT_PROTOCOL`: either hides a break from the check. Treating the numbers as a
+above the oldest served protocol: either hides a break from the check. Treating the numbers as a
 server-side check: they tell a client which side to update, and every reducer still validates its
 own input.
 
+The constants, the row's writers and the wire contract's files: `ARCHITECTURE.md` "server-module:
+the authority", Lifecycle.
+
 ## A client checks the server's protocol numbers before anything else, and a refusal lasts until reload
 
-**Decision.** Each connection subscribes `module_info` alone first and judges row 0 against its own
-`protocol_version()` (`client/src/net/protocolCheck.ts`). A protocol below the client's, no row or a
-refused query means the host must update the server; a `min_client_protocol` above the client means
-the player must update the game. A refusal ends the connection and the page builds no other one,
-and the line naming the side stays on the world hint until reload. An admitted connection is judged
-again whenever the row changes, and only toward refusal. `module_info`'s three columns never change.
+**Decision.** Each connection subscribes the module-info table alone first and judges its row
+against the client's own protocol number. A protocol below the client's, no row or a refused query
+means the host must update the server; an oldest served protocol above the client's means the player
+must update the game. A refusal ends the connection and the page builds no other one, and the line
+naming the side stays on the world hint until reload. An admitted connection is judged again
+whenever the row changes, and only toward refusal. The module-info table's three columns never
+change.
 
 **Why.** The numbers help only if a client that cannot speak to the server can still read them, so
 they are read before any other table and from a row whose shape is fixed for good (an SDK cannot
-decode a row that lost a column). The refusal is terminal so that the
-line and the game never disagree: a page that reconnected, was admitted and played under "Update the
-game to join" would be saying something false, and a line that cleared itself would be missed. A
-reload is the retry. An admitted connection is judged again because a client that reconnects between
-a publish and the owner's `sync_content` still reads the previous numbers.
+decode a row that lost a column). The refusal is terminal so that the line and the game never
+disagree: a page that reconnected, was admitted and played under "Update the game to join" would be
+saying something false, and a line that cleared itself would be missed. A reload is the retry. An
+admitted connection is judged again because a client that reconnects between a publish and the
+owner's `sync_content` still reads the previous numbers.
 
-**Rules out.** Adding, removing or re-typing a column of `module_info` (a new fact goes in a new
-table). Subscribing anything else, or calling a reducer, before the verdict. Admitting a refused
+**Rules out.** Adding, removing or re-typing a column of the module-info table (a new fact goes in a
+new table). Subscribing anything else, or calling a reducer, before the verdict. Admitting a refused
 page later, or re-running the check on a timer. Serving a client bundle before the module it needs
 is published and synced: a client newer than the server it reaches is refused, correctly, and stays
 refused until reload. Reading the check as access control: the server turns nobody away by protocol.
 
+The check's module and its place in the connection: `ARCHITECTURE.md` "Connection and store".
+
 ## Observability: the module never times itself or sends a signal out
 
-**Decision.** Server signals come from the SpacetimeDB host: `/v1/metrics` for
-Prometheus and the module's log files for Alloy→Loki. New server log lines go through
-`observability::mr_log` (one JSON envelope). A 60 s `mr_heartbeat` scheduled reducer
-logs the deployed content version and writes nothing; it keeps running in a world with
-nobody connected. OpenTelemetry spans and metrics
-are client-side only. The self-hosted stack (Prometheus, Alloy, Loki, Tempo, Grafana,
-node_exporter, Caddy, and a trace relay) lives in `ops/observability/`, bound to
-loopback.
+**Decision.** Server signals come from the SpacetimeDB host: its metrics endpoint for Prometheus and
+the module's log files for Alloy and Loki. New server log lines go through one JSON-envelope logger.
+A 60 s heartbeat logs the deployed content version and writes nothing; it keeps running in a world
+with nobody connected. OpenTelemetry spans and metrics are client-side only. The self-hosted stack
+is bound to loopback.
 
-**Why.** Reducers cannot make outbound calls and should not read clocks, so the host
-has to be the source of timings and counters. The module's only outbound requests are the
-account checks' (four procedures in `server-module/src/account_checks.rs`, to the one
-account service the build names, see "A private world checks an account itself: a one-use ticket at first contact, then the account's handle"); none of them carries a signal.
-`/v1/metrics` answers without
-authentication and labels its series by database, so everything stays on loopback.
+**Why.** Reducers cannot make outbound calls and should not read clocks, so the host has to be the
+source of timings and counters. The module's only outbound requests are its four account-check
+procedures, to the one account service the build names, and none of them carries a signal. The
+host's metrics endpoint answers without authentication and labels its series by database, so
+everything stays on loopback.
 
-**Rules out.** An exporter or polling reducer; a procedure that sends telemetry; ad-hoc
-`log::` formats in new code; exposing the stack without changing the Caddy bind address on
-purpose.
+**Rules out.** An exporter or polling reducer; a procedure that sends telemetry; ad-hoc `log::`
+formats in new code; exposing the stack without changing the Caddy bind address on purpose.
+
+The logger, the heartbeat and the stack's parts: `ARCHITECTURE.md` "Observability".
 
 ## Client UI: virtual buttons, one context stack, one overlay frame
 
