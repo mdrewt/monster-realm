@@ -232,7 +232,7 @@ writes:
 | `pvp` | `challenge_pvp`, `accept_challenge` (opens a tactical battle), `decline_challenge`, `cancel_challenge`, scheduled `battle_challenge_reaper` |
 | `ranking` | `set_profile_name` |
 | `accounts` | `start_guest_claim`, `complete_guest_claim`, `delete_account`, `cancel_account_deletion`, scheduled `guest_claim_reaper` and `account_deletion_reaper` |
-| `access` | `set_world_access` (owner-only): the world's access rule (`Open`, `Password` or `Allowlist`) and the admission list; `require_admitted` opens every non-owner-only client reducer but `unbind_world_account` |
+| `access` | `set_world_access` (owner-only): the world's access rule (`Open`, `Password` or `Allowlist`) and the admission list; `require_admitted` (the access rule, then ownership) opens every non-owner-only client reducer but `unbind_world_account` and the account's own five, which open with `require_rule_admits`, the access rule alone |
 | `world_binding` | `request_bind_nonce`, `bind_world_account` and their owner-relayed forms `request_bind_nonce_for`, `bind_world_account_for`; `unbind_world_account`, the one client reducer outside the owner-only set with no admission check, which erases the caller's `world_account` row with its armed re-check, its binding and its nonce, and withdraws its admission row when a `world_account` row went; owner-only `set_world_names`, `set_world_allowlist` (the list holds handles) and `drop_world_binding` (the same erasure for a named identity; does not write the list). Owns `world_binding`, `world_bind_nonce`, `world_name` and `world_allowlist`, and verifies the attestation (`verify_attestation`), whose binding grants nothing; a build with no attestation key refuses the four nonce and bind reducers; `delist_account_of`, the deletion cascade's step, takes a deleted identity's handle off the list |
 | `account_checks` | procedures `check_account` (a client's one-use ticket), `check_account_for` (owner-only relay), scheduled `recheck_account` (the database only, armed by the connect reducer) and scheduled `host_account_check` (the database only: the account the world's host plays under): the world asks the account service the build names (`POST /world/check`, 3 s timeout) whether an account owns the game and stores the answer. Owns `world_account`, `world_check_budget`, `recheck_schedule`, `world_move`, `world_egress` and `host_check_schedule`; `entitled` and the `Allowlist` rule read `world_account` |
 | `privacy` | `request_data_export`, scheduled `export_bundle_reaper` |
@@ -488,16 +488,75 @@ call or by the tick.
 - **Features** (`server-module/Cargo.toml`). `dev_reducers` compiles `grant_bait`
   (`taming.rs`) and `dev_expire_tactical_window` (`dev_clock.rs`); `load_test_zones`, which
   implies `dev_reducers`, also compiles `dev_place_in_load_zone` (`load_dev.rs`).
-  `dev_reducers` implies `open_join`; `default` holds `open_join` and no dev-reducer
-  feature. A release feature (`official` or `world`) named with a dev-reducer feature does
-  not compile, and `just release-module` refuses an artefact that names a dev reducer or
-  whose profile compiles one.
-- **Published-module checks.** The playtest recipes publish the default build and then check
+  `dev_reducers` implies `open_join`; `default` is empty. A release feature (`official` or
+  `world`) named with a dev-reducer feature does not compile, and `just release-module`
+  refuses an artefact that names a dev reducer or whose profile compiles one.
+- **Published-module checks.** The playtest recipes publish the `open_join` build and then check
   the *published* module with `spacetime describe --json`
   (`scripts/verify-release-reducers.mjs`, whose `FORBIDDEN_REDUCERS` lists every dev reducer
   name), and check that the production client bundle holds no DEV debug hooks
   (`scripts/verify-build-hooks.mjs`). The committed client bindings are generated from the
   default build, and the `bindings-drift` eval fails if a dev reducer appears in them.
+- **Ownership features.** The build input is the cargo features of `monster-realm-module`:
+  `official`, `world`, `dev_issuers`, `open_join` and `dev_reducers` (`server-module/Cargo.toml`). A
+  build enforces ownership unless it names `open_join`. `official` and `world` select production
+  trust (`docs/DECISIONS.md`, "The official build holds no attestation key and a world build trusts
+  no login issuer"); `dev_issuers` adds the dev login issuers and still enforces; `open_join`
+  implies `dev_issuers`, and `dev_reducers` implies `open_join`. A release feature wins over a dev
+  feature, so no feature set yields production trust with enforcement off. `build_profile`, a `const
+  fn` in `server-module/src/accounts.rs`, computes a `BuildProfile` from the features: its name,
+  whether it enforces ownership, the login issuers it trusts, the attestation keys it holds and
+  whether it compiles a dev reducer. It applies cargo's implications itself, so a feature handed to
+  the compiler from outside cargo yields no other profile. `BUILD_PROFILE` is this build's, and
+  `ALLOWED_ISSUERS` is its login-issuer list: the two dev issuers (`http://localhost:4455`,
+  `https://auth.monster-realm.spookyowltech.com`) on a test or dev-enforcing build,
+  `PRODUCTION_LOGIN_ISSUERS` (the fail-closed `.invalid` placeholder) on `official`, and none on
+  `world`, on a build with both release features and on a build with no feature at all. A release
+  feature together with `dev_reducers` or `load_test_zones` does not compile (a const assertion,
+  skipped under clippy, whose `--all-features` run names every feature). The ownership features add
+  or remove no table, reducer, view or type.
+- **The build that names no feature.** `default` in `server-module/Cargo.toml` is empty, so a build
+  that names no feature enforces ownership, trusts no login issuer and holds no attestation key: it
+  admits nobody. A site that builds for anonymous play names `open_join` itself. `just build`, `just
+  publish`, the playtest recipes, `scripts/smoke-republish.sh`, the nightly load smoke and the local
+  fallback of `client/e2e/global-setup.ts` hand it to the CLI's build: `spacetime build --features
+  open_join`, and `--build-options="--features open_join"` on a `--module-path` publish, which
+  reaches cargo (measured on CLI 2.16.1). `just test`, `just ci-fast` and the mutation recipes name
+  it for the module's tests, which join anonymously. `just gen`, the bindings-drift eval and `just
+  module-definition` name no feature, because the ownership features change neither the bindings nor
+  the definition. `just release-module <official|world>` makes the module to ship and does not
+  depend on the default: it passes `--no-default-features`, and a release feature wins anyway.
+- **The release artefact.** The artefact carries its profile as the wasm custom section
+  `mr_build_profile` (`profile=`, `enforces_ownership=`, `dev_reducers=`, then a `login_issuer=`
+  line per issuer), which `just module-profile <wasm>` prints. `just release-module
+  <official|world>` refuses any other argument. It builds the module alone with `--locked
+  --no-default-features --features <profile>` into `<target>/release-module/<profile>`, with the
+  rustflags emptied (an empty `CARGO_ENCODED_RUSTFLAGS` also overrides config-file flags) and
+  `RUSTC`, `RUSTC_WRAPPER` and `RUSTC_WORKSPACE_WRAPPER` unset. It refuses an artefact whose section
+  is absent or duplicated, is not the profile asked for, does not enforce, compiles a dev reducer,
+  names a dev reducer anywhere in its bytes (`FORBIDDEN_REDUCERS` in
+  `scripts/verify-release-reducers.mjs`), or trusts anything but one `https:` login issuer
+  (`official`) or none (`world`). It writes `<target>/release-module/monster-realm-<profile>.wasm`
+  and its `.sha256`, by which the artefact is embedded or published. The code is proved by
+  `server-module/src/accounts_tests.rs` (`acs6_profile` over all 64 feature sets, `acs6_claim`,
+  `acs6_door`, `acs6_section`); by `server-module/src/movement_tests.rs`, where `acs6_enforcing`
+  runs the real reducer on a real dev-enforcing build through one line of `just test`
+  (`--no-default-features --features monster-realm-module/dev_issuers`) and `acs6_open` runs it on a
+  test build; by `server-module/src/privacy_enforcement_tests.rs`, where `mod admission_roster`
+  holds each reducer of the generated bindings in exactly one of the four kinds of the gate's roster
+  (Private worlds, The ownership gate), so a reducer added later is gated or the test fails, and on
+  the dev-enforcing build runs every gated reducer as an admitted caller who is not entitled; by
+  `mod ownership_gate` in `server-module/src/access_tests.rs`, the gate over constructed profiles,
+  enforcing and not; by the `acs6_enforcing_*` modules of `world_binding_tests.rs`,
+  `accounts_tests.rs`, `privacy_tests.rs`, `content_tests.rs` and `access_tests.rs`, which run each
+  exempt reducer on the dev-enforcing build as a caller who is not entitled; by `justfile.test.mjs`;
+  and by `evals/account-e2e.eval.mjs`, which on a live host publishes a dev-enforcing build
+  (anonymous and unentitled tokens refused, an entitled one joins), the `official` artefact `just
+  release-module` built (anonymous and a dev-issuer token refused, no `account` row) and the
+  artefact cargo builds when no feature is named (its section reads `profile=default`,
+  `enforces_ownership=true`, `dev_reducers=false` and no login issuer; `join_game` answers
+  `ownership required` to an anonymous token and to the entitled token the dev-enforcing build
+  admits, and `request_bind_nonce` answers `this server takes no world binding`).
 - **`dev_expire_tactical_window`** is callable only by the module owner (the `config` row's
   `owner_identity`, the check `sync_content` makes). It moves the named side's open turn window
   deadline to the call's time and arms one deadline fire there, through the dev-gated forwarder
@@ -525,6 +584,346 @@ call or by the tick.
   feature. The default game-core build compiles no new function for a dev or load feature: a
   game-core loader reaches gated code through a macro on the loader's existing line, whose
   feature-off arm expands to the loader's original expression (`load_test_zones::zones!`).
+
+### Private worlds
+
+A single-player or friends world checks its players' accounts itself, applies its host's access rule
+and, on a build that enforces ownership, refuses a caller whose account does not own the game. The
+reasons are in `docs/DECISIONS.md`, from "A private world checks an account itself…" to "Ownership
+is enforced unless a dev feature switches it off".
+
+**Account checks.** In a single-player or friends world the player connects under that world's own
+anonymous token and never sends an account token. The world asks our account service itself whether
+the player's account owns the game, through four procedures in
+`server-module/src/account_checks.rs`, and keeps the answer in private `world_account {handle,
+identity, entitled, checked_at_ms, is_host}`, which an identity reads through `my_world_account`
+(its own row alone). A handle is what the service answers for one account in one world: opaque, the
+same at every check, and not a credential.
+
+- **First contact.** A client whose identity the world does not know asks the account service's
+  `POST /ticket` for a one-use ticket naming the world as its own software authenticated it, and
+  calls `check_account(ticket)`. The procedure refuses a ticket that is not 43 base64url characters,
+  a world that presents no name (see The world's address below), and a caller once the world has
+  sent 30 ticket redeems in the current minute (the one row of `world_check_budget`); none of the
+  three sends anything. Otherwise it presents the ticket, the names the world presents and its
+  database identity at `POST /world/check` under a 3 s timeout, and stores the answered handle and
+  entitlement, a negative answer included, in one transaction; `Ok` carries whether the account owns
+  the game. A `403` (`the account service refused the ticket`) and any other failure, a timeout
+  included (`the account service gave no answer`), refuse the call and change no `world_account`
+  row. An identity the access rule has not admitted cannot connect, so the world's owner relays its
+  ticket through `check_account_for(who, ticket)`; the relay counts in the budget and is never
+  refused by it. A handle another identity holds moves that identity's character to the caller
+  (`docs/DECISIONS.md`, "One character per account in a world: a check under a handle another
+  identity holds moves the character"). A second account for an identity that holds one is refused
+  (it unbinds first).
+- **Each later connection.** The connect reducer arms one one-shot `recheck_schedule` row for an
+  identity whose row was last checked 10 minutes ago or more, that has none armed and whose account
+  is not pending deletion, and stamps the row's `checked_at_ms` as it arms: the world asks about one
+  identity at most once in 10 minutes, however often it connects and whatever the run does.
+  `checked_at_ms` is therefore when the world last asked, not when it was last answered. The host
+  runs `recheck_account` from it (any other caller is refused before anything is sent), which
+  presents the stored handle and stores the answer: a handle the service does not know is stored as
+  not entitled; a handle under the service's newer key takes the stored one's place in
+  `world_account` and in `world_allowlist` in the same transaction; a newer handle another identity
+  already holds leaves the row's handle and stores the standing on it. The connection is admitted
+  and entitled by the stored row the whole time, and a row never expires. A run with no answer
+  leaves whether the account owns the game unchanged, the host spends the one-shot row whatever the
+  run did, and the first connection 10 minutes after the arming asks again.
+- **The host's own check.** The owner names the identity the host plays as with
+  `set_host_identity(who)`: it marks that identity's row (`is_host`), clears the mark on every other
+  row and arms one row of private `host_check_schedule {scheduled_id, scheduled_at,
+  last_success_ms}`, which ticks `host_account_check` every hour. Refused with no write: a caller
+  that is not the owner, an identity whose account is pending deletion, a build that names no
+  account service, and an identity that holds no row (`that identity holds no account here`). A tick
+  asks about the marked row's handle, and no other, when the schedule row holds no success, one 23
+  hours old or more, or one stamped after the tick's own time; otherwise, and while no row is marked
+  or the marked account is pending deletion, it sends nothing. Any caller but the database is
+  refused before anything is read. The answer is stored as a re-check stores it, and the success is
+  stamped only when the answer landed on the row asked about, still marked, the schedule row still
+  holds what the tick read, and the world still asks over the address family the request went over.
+  An answer about an account that entered deletion during the wait stores its address alone. A tick
+  that gets no answer writes nothing, so the next one asks again. Naming another identity, and a
+  `set_world_names` call that changes the set of names, leave the schedule row with no success, so
+  the next tick asks. The schedule row is never updated: every change deletes it and inserts
+  another. The mark stays on its row through a newer handle and a move, until another identity is
+  named or the row is erased.
+- **The world's address.** Every answer reports the address the service saw the request leave from,
+  and the world stores it in private `world_egress {family, address, confirmed_at_ms}`, one row for
+  IPv4 and one for IPv6. A re-check and the host's check store it in the transaction that stores
+  their answer. A redeem stores it in a transaction of its own, before the one that stores the
+  account, so a redeem that is then refused has still stored it. The world sends every request to
+  the service's check name for the address family of its `ip:` names, `ipv4.` or `ipv6.` in front of
+  the host its profile names (IPv4 when it lists `ip:` names of both), so the address reported is of
+  that family. A redeem presents a `spki:` or `dns:` name always, and an `ip:` name only when it
+  carries an address of that family and either no address is stored for the family or the stored one
+  is the name's own and was confirmed under 25 hours ago. A world that presents no name is refused
+  before anything is sent (`this world has no name to check an account under`). The answered name
+  must be one the world presents when the answer lands, that answer's own address counted, or the
+  redeem is refused (`the account service refused the ticket`). Addresses are compared as addresses,
+  an IPv4-mapped IPv6 address as the IPv4 address it carries, and a row stamped after the
+  transaction's own time vouches for nothing.
+- **Deciding after a wait.** Other transactions run while a request waits, and a transaction's body
+  may run twice. The transaction that stores an answer reads again every row it decides on (the
+  admission or the ownership, the deletion state, the world's names, who holds the handle), and a
+  re-check leaves alone a row that was unbound, checked again or replaced meanwhile, so an older
+  answer never overwrites a newer one. A refusal is logged once, outside any transaction. No log
+  line, table or return value holds a ticket, and no log line or return value holds a handle.
+- **What reads the row.** `accounts::entitled` (The ownership gate, below) and, under `Allowlist`,
+  `access::is_admitted`, which admits an identity that holds a row exactly while its handle is on
+  the host's list (Access, below).
+- **Erasing it.** `unbind_world_account()` erases the caller's row with its armed re-check, and the
+  owner's `drop_world_binding(identity)` does the same for a named identity. The unbind is the one
+  reducer of the client roster the access rule does not gate, so a player whose handle the host took
+  off the list can still erase the link, over a connection the connect reducer let in while the
+  player was admitted. When a row goes, that identity's `world_admission` row goes with it, under
+  every rule. A caller with nothing to erase gets `Ok` with no write (the drop answers `that
+  identity holds no world binding`), and an account pending deletion is refused by the deletion
+  gate. The deletion cascade takes the identity's handle off the host's list and erases the row and
+  the identity's `world_move` row; a guest claim erases both for the guest identity it retires and
+  moves none; the data export carries the caller's own row of each.
+- **The client's half.** A connection to a `local` or `private` target subscribes `my_world_account`
+  and `my_world_move` and reads its own rows at each applied snapshot, before any join
+  (`client/src/net/worldTicket.ts`, `client/src/net/connection.ts`). A move row sends nothing and
+  the page says the character is playing on another client; an own account row joins with no request
+  to the account service; with neither row and a ticket source it asks for a ticket for the world's
+  name (`worldNameFor`), calls `check_account(ticket)` on the raw connection, and joins only if the
+  world answered that the account owns the game; with no source, or a build that checks no account,
+  it joins as before. Only the page's first such snapshot runs first contact by itself; a later one
+  waits for the player (`Connection.checkIn()`), because an account gets ten tickets a minute across
+  every world and a host that drops the link could otherwise draw one per reconnect. A ticket source
+  is one interface, `TicketSource { ticket(world), signIn() }`; the one built,
+  `createIdTokenTicketSource`, is a page that signs in to the account service itself and holds the
+  ID token in memory, and `main.ts` builds it only for a `local` or `private` target outside the
+  desktop shell when `VITE_MR_WORLD_TICKET_ISSUER` is set. The gate is the menu frame's gate mode,
+  the frame the sign-in gate of a server we operate uses (`worldGateStep`, `buildWorldGateView`).
+- **Which service.** `BuildProfile::world_check_url` (Build profiles, below).
+- **What keeps the surface closed.** `findDefinitionViolations`
+  (`scripts/verify-release-reducers.mjs`) refuses a module definition that declares any procedure
+  but these four, or any schedule but the module's own, on the default build and on each release
+  artefact. The reducer census (`server-module/src/privacy_enforcement_tests.rs`) refuses a
+  `procedure` attribute outside `account_checks.rs` and pins the tables each procedure reaches: for
+  the two first-contact procedures `world_account`, `world_check_budget`, `world_allowlist`,
+  `world_move`, `recheck_schedule`, `world_egress` and the tables a character move writes;
+  `world_account`, `world_allowlist` and `world_egress` for the re-check; those three and
+  `host_check_schedule` for the host's check. The same file proves `world_egress` and
+  `host_check_schedule` private, with no view over either. The client's procedure surface is pinned
+  by `evals/client-surface-privacy.eval.mjs`, and the wire contract records each procedure's
+  arguments and return type.
+
+The attestation binding is compiled beside it (`server-module/src/world_binding.rs`: the tables
+`world_binding` and `world_bind_nonce`, their two views, the four nonce and bind reducers and the
+verifier). It records a binding that nothing reads: it entitles and admits nobody, and it is to be
+removed with `POST /attest`. A caller who is not entitled is refused by every reducer a player plays
+through (The ownership gate, below). Proved by `server-module/src/account_checks_tests.rs` and, for
+the host's own check, `server-module/src/account_checks_host_tests.rs` on the native test host, with
+every answer of the service stubbed. That host runs a scheduled procedure as the scheduler would
+call it and runs no scheduler, so the hourly tick and a request to a check name are not measured on
+a published module. The measurements on 2.16.1, the four alternatives with a judge's scores and the
+slice changes are in `docs/refactors/account-checks.md`.
+
+**A character move.** When `check_account` or the owner's `check_account_for` is answered with a
+handle that another identity of the world holds, the two identities are one account at two clients,
+and the transaction that stores the answer moves the character to the identity the ticket was
+redeemed for. `accounts::move_character` carries every row that makes up the character: monsters and
+their public twins, pending evolution notices, inventory, quests and the whole dialogue row, the
+heal cooldown, the wallet, the ladder profile with its name, the formation, the handle with its
+discriminator, and the position. It deletes the challenges that name the source and the source's
+export bundles. The handle's `world_account` row then points at the new identity and keeps its host
+mark, the source's armed re-check is deleted, and private `world_move {identity, moved_at_ms}`
+records the identity the character left, which reads its own row through `my_world_move`. That
+identity's next successful check deletes the row, and until then `join_game` and
+`complete_guest_claim` refuse it (`this character is playing on another client; sign in again to
+play here`), so checking in again with the same account moves the character back.
+
+- **Position.** A source that is in the game has its character's zone, tile and facing saved as the
+  destination's `last_position`, and its `character`, `move_intent` and `player` rows are deleted,
+  the `player` row last. The destination's own `join_game` makes its character there. The source's
+  later disconnect finds no `player` row and writes nothing of the character.
+- **Refusals, each with no write.** A ticket whose answered name is neither a `spki:` name, a `dns:`
+  name nor an `ip:` name the world has confirmed (`this account already plays here under another
+  identity`); a caller that holds another account; a caller that owns a character (`this identity
+  already plays a character here`); and, under one reason (`this character cannot change clients
+  right now`), either identity in an ongoing battle or named by a trade offer or session, or a
+  source whose account is pending deletion. The world has confirmed an `ip:` name while the address
+  stored for its family in `world_egress` is the name's own and was confirmed under 25 hours ago,
+  read after the answer's own address is stored (`docs/DECISIONS.md`, "A private world checks an
+  account itself: a one-use ticket at first contact, then the account's handle").
+- **What stays under the source.** Its `world_move` row; finished battles and what records them
+  (`battle`, `battle_summary`, the tactical rows until their sweep, `playtest_event`); and the rows
+  about that identity's own connection, admission and login (`player_session`, `world_admission`,
+  `world_admission_attempt`, `world_binding`, `world_bind_nonce`, `account`).
+- **Admission.** A move admits nobody. The source's `world_admission` row is deleted when the access
+  rule was not admitting the source before the move, which is a source under `Allowlist` whose
+  handle is off the host's list, and is kept otherwise, so the first client can connect, read its
+  `world_move` row and check in again. Under `Allowlist` a source with no admission row is refused
+  at connect once its account row is gone, and comes back through the owner's relay.
+- **Deletion and export.** The deletion cascade and a guest claim, for the guest identity it
+  retires, delete an identity's `world_move` row (`account_checks::erase_world_move`), and the data
+  export carries the caller's own. An unbind and the owner's drop leave it: the row goes only by a
+  check, the identity's own or one the owner relays, or by the cascade.
+
+Proved by `server-module/src/account_checks_tests.rs` (`mod character_move`, and `mod ip_move` for a
+move through an `ip:` name) through the procedures with the service's answer stubbed, and by the
+tests of `accounts::move_character`, `movement::move_position` and `ranking::move_profile`.
+`docs/local-play.md` ("One character per account: what a move carries and what it costs") holds the
+measured cost.
+
+**The attestation check.** `world_binding::verify_attestation(keys, attestation)` runs these checks
+in order: a token over 4096 bytes is refused before anything is decoded; three non-empty segments of
+strict unpadded base64url (`base64` 0.21); a header that is a JSON object, of which only `kid` is
+read (`alg` never is); the key from the build's own `kid`-keyed list, never from the token; a
+64-byte signature that `verify_strict` accepts over `<header>.<payload>`. The payload is parsed only
+after the signature verifies (`serde` derive over `serde_json`): string `sub`, `aud` and `nonce`,
+integer `exp`, optional `mr_ent` array of strings, a repeated or wrongly typed member refused, `sub`
+1 to 255 visible ASCII. `iss`, `iat` and `jti` are not read.
+
+**World names.** A browser page's names for a ticket are computed by `worldNameFor` in
+`client/src/net/worldTicket.ts`. A world holds its own names in a private table its owner writes
+with `set_world_names` (at most 16, each 1 to 512 visible ASCII characters; a world with no name
+accepts no binding), and `bind_world_account` accepts an attestation only when its `aud` equals one
+of them, byte for byte. The module's half is proved by `mod bind_refuses` and `mod relay_rig` in
+`server-module/src/world_binding_tests.rs`.
+
+**Build profiles.** A release build of the module is one of two. The `official` build trusts the
+production login issuer and holds no attestation key. The `world` build, which the desktop shell and
+the standalone server ship, holds the production attestation keys and trusts no login issuer. Both
+lists are constants of the build: `BuildProfile::attestation_keys` is empty on `official`, `default`
+and `conflict`, `PRODUCTION_ATTESTATION_KEYS` on `world` (empty, since no production key is
+published, so a `world` build binds nothing) and `DEV_ATTESTATION_KEYS` (the published `local-dev`
+key; `hosted-dev` publishes none) on `test` and `dev-enforcing`; a test holds the lists to the
+generated `account-service/attestation-public-keys.json`. On a build with no key the six binding
+reducers (`bind_world_account`, `request_bind_nonce`, the owner-relayed form of each,
+`unbind_world_account` and `drop_world_binding`) return `this server takes no world binding` as
+their first statement, before anything is decoded, read or written; the unbind and the drop do so
+only on a build that also names no account service to ask. A binding records the `kid` that signed
+it, and no rule reads a binding on any build. On the `world` build every token is an anonymous
+guest's. The two builds have one schema and one set of client bindings. The builds also differ by
+the account service a world asks about an account (`BuildProfile::world_check_url`, the `POST
+/world/check` address). `official`, `default` and `conflict` name none: each of the four
+account-check procedures answers `this server checks no account` as its first statement, and
+`entitled(ctx, profile)` reads no `world_account` row there, so the official build has the login
+token as its one way in. `world` names the production service, a placeholder under a reserved name
+that answers nothing, so a `world` build entitles nobody until a real address ships. `test` and
+`dev-enforcing` name `hosted-dev`, because the host refuses a procedure's request to `local-dev` on
+loopback (`docs/refactors/account-checks.md`, row P2). The artefact's `mr_build_profile` section
+does not carry the address. Proved by `mod binding_build` and `mod official_build` in
+`server-module/src/world_binding_tests.rs` (the second under the `official` build, which no run of
+`just ci` includes: `cargo nextest run --workspace --no-default-features --features
+monster-realm-module/official -E 'package(monster-realm-module) & test(/official_build/)'`).
+`docs/local-play.md` §3, fork (b).
+
+**Access.** While a world's access rule is `Password` or `Allowlist`, the connect reducer refuses,
+as its first statement, an identity that `access::is_admitted` does not admit
+(`access::require_admitted_at_connect`), and every reducer of the generated client roster that is
+not owner-only makes that admission check, except `unbind_world_account`, which makes none
+(`docs/DECISIONS.md`, "A private world checks an account itself: a one-use ticket at first contact,
+then the account's handle"). The five reducers an account reaches whatever it owns make it through
+`access::require_rule_admits`, the access rule alone; the others make it through
+`access::require_admitted`, which makes it and then the ownership check (The ownership gate, below,
+names the five). The owner-only ones are `sync_content`, `set_world_access`, `set_world_names`,
+`set_world_allowlist`, `set_host_identity`, `drop_world_binding` and the two relayed binding
+reducers. The binding reducers answer their build's refusal before that check; it reads nothing. The
+procedure `check_account` makes the admission check before it sends anything and again before it
+stores an answer, and `check_account_for` the owner check. A world with no `world_access` row is
+`Open`. Under `Password`, `is_admitted` admits the owner and an identity in `world_admission`. Under
+`Allowlist` it admits the owner; an identity that holds a `world_account` row exactly while that
+row's handle is a row of private `world_allowlist` (at most 256 handles of 1 to 1024 visible ASCII,
+in the column named `account_subject`), and nothing else counts for it, so delisting refuses at the
+next check; and an identity with no such row only when it holds a `world_admission` row. An
+attestation binding is not read. The list is read at every check and nothing is stored from it. When
+the rule changes to one that is not `Open`, `set_world_access` gives an admission row to each live
+identity other than the owner that the rule in force before the call admitted; a live identity that
+rule refused gets one only when the call names it. A new joiner's way in under `Allowlist` is the
+owner's relayed account check (`check_account_for`) and the listing of the handle it stored.
+Admission rows are written only by the owner-only reducer `set_world_access`, which takes the
+joiners' identities, and deleted by a player's own unbind and the owner's `drop_world_binding` when
+either erases a `world_account` row, by the deletion cascade and a guest claim (for the retired
+guest), and by a character move, for a source the rule was not admitting (A character move, above).
+A retired guest identity that reconnects holds no world row: in a `Password` or `Allowlist` world it
+is refused until the owner admits it or relays a check for it.
+
+The list is the owner's to edit (`set_world_allowlist` replaces it) and is made from the players
+already let in. When the rule changes to `Allowlist`, `set_world_access` adds the handle of every
+`world_account` row whose identity the rule in force before the call admitted (under `Open` every
+one; under `Password` those holding a `world_admission` row, and the owner's), beside the handles
+already listed; its `admit` argument adds none. While the rule is `Allowlist`, the handle of the
+owner identity's own row stays listed: `set_world_allowlist` stores it whether or not the call names
+it, and a check of the owner's identity adds it. The list never passes 256 handles: a rule change
+that would add past that, a `set_world_allowlist` that would store the owner's handle beside 256
+others, and an owner's check under `Allowlist` of a handle a full list lacks are each refused with
+the list's too-many error and no write. Under `Open` and `Password` the list is kept, stored as the
+owner names it, and not read; the next change to `Allowlist` adds to it. A re-check that the service
+answers under a newer handle puts that handle in the listed one's place. An account's deletion takes
+the handle of the deleted identity's `world_account` row off the list; an identity with no row takes
+nothing off, and a row the host typed that equals the handle goes too, because it names the same
+account (`world_binding::delist_account_of`, called by `accounts::account_deletion_reaper` before
+the row's erase). The row is the only record of the handle, so an identity whose row is already gone
+takes nothing off: a player who unbinds, or whose row the owner drops, before the account's deletion
+leaves the handle listed. A guest claim does not write the list either, so the handle of the guest
+identity it retires stays listed until the host removes it.
+
+The module declares no HTTP handler, no HTTP route and no row filter: a check of the generated
+module definition refuses each, on the default build (`just module-definition`, in `just ci`) and on
+each artefact `just release-module` makes (`scripts/verify-release-reducers.mjs`, over
+`spacetimedb-standalone extract-schema`). All three sit behind the `spacetimedb` crate's `unstable`
+feature, which the workspace enables, so that check is what keeps them out (`docs/DECISIONS.md`,
+"The crate's `unstable` feature is on; the generated definition is checked instead"). The same check
+and the deletion-gate census allow the four account-check procedures and no other. Built: the
+module's half (`server-module/src/access.rs`, and the list in `server-module/src/world_binding.rs`);
+`mod admission_roster` in `server-module/src/privacy_enforcement_tests.rs` takes the reducer roster
+from the generated bindings' file names and executes every shipped reducer as an unadmitted caller
+on a `Password` world. Designed, not built: the gate's half (the door endpoint and its password
+check, closing a removed identity's sockets), in `docs/local-play.md` §3, fork (a); see
+`docs/DECISIONS.md`, "The gate checks a world's password; the module never receives one".
+
+**Reducer arguments.** `set_world_access(rule, admit)` is owner-only and stores in `world_access`
+the rule and nothing else: the table has no salt or hash column. `mod reducer_arguments` in
+`server-module/src/privacy_enforcement_tests.rs` describes every reducer the build declares, the dev
+builds' listed by hand, and holds that no argument is named for a password and that the arguments
+carrying text are a reviewed roster.
+
+**The ownership gate.** On an enforcing build the gate `access::require_admitted`, which every
+reducer a player plays through opens with, makes the ownership check straight after the access rule
+and before the reducer reads or writes anything else (`accounts::require_entitled` under
+`BUILD_PROFILE`). The caller's connection must carry a token from one of the build's login issuers,
+addressed to `ALLOWED_AUDIENCE`, whose `mr_ent` claim names `base-game`, or the caller's
+`world_account` row must say its account owns the game, as below (an attestation binding entitles
+nobody). Anyone else, an anonymous connection included, gets the one fixed error `ownership
+required`, and nothing is written; this holds whether or not the identity has joined. An identity
+the access rule does not admit gets the admission refusal first, and nothing of ownership is read. A
+build that does not enforce admits everyone and never reads the token. The claim is read by a small
+scanner over the token's raw payload, since the module has no JSON crate
+(`token_names_entitlement`): exactly one top-level `mr_ent`, an array holding the string; a
+duplicate key, an escaped key or text the scanner cannot follow fails closed.
+
+The 51 reducers of the generated client roster split four ways. 37 are gated, `join_game` among them
+and reducers that need no `player` row, such as `care`, `train`, `evolve`, `set_nickname` and
+`set_party_slot`; the two player binding reducers answer their build's refusal (`this server takes
+no world binding`) before the gate. 5 are the account's own and open with
+`access::require_rule_admits`, the access rule alone: `delete_account`, `cancel_account_deletion`,
+`request_data_export`, `start_guest_claim` and `complete_guest_claim`. 8 are owner-only and make
+their owner check and no ownership check (named in Access, above). `unbind_world_account` makes
+neither the admission check nor the ownership check. The connect reducer and the four account-check
+procedures of `server-module/src/account_checks.rs` ask nothing about ownership: where a world
+checks accounts itself, an identity becomes entitled by connecting and checking its account in.
+
+The gate reads what is stored when the call runs: the token the connection opened with and the
+caller's `world_account` row. It asks the account service nothing. So an identity that has joined is
+refused from the first call that finds it not entitled: after a re-check or the host's own check
+stores a negative answer, after the owner drops its row (`drop_world_binding`), after it unbinds, or
+after its character moved to another identity (the row then points at that identity).
+
+`accounts::entitled(ctx, profile)` entitles everyone on a build that does not enforce. An enforcing
+build entitles a connection whose login token entitles it, or whose identity holds a `world_account`
+row that says its account owns the game, however long ago the account service said so
+(`docs/DECISIONS.md`, "A private world checks an account itself: a one-use ticket at first contact,
+then the account's handle"). `require_entitled` writes nothing, and reads `world_account` only when
+the token does not entitle and the profile names an account service. So on a dev-enforcing build a
+connection with no row, one whose row says the account does not own the game and one that holds only
+an attestation binding are all refused by `join_game` with `ownership required`, under `Open`,
+`Password` and `Allowlist` (`mod acs6_enforcing_bound` in
+`server-module/src/world_binding_tests.rs`; `mod open_join_unbound` holds an unbound join accepted
+under `open_join`). Every other gated reducer refuses them the same way.
 
 ### Working with SpacetimeDB
 
@@ -575,6 +974,16 @@ part of the schema:
 A view takes only its context and filters on `ctx.sender()` through an index. That
 body is the whole security boundary.
 
+- **The party index.** The private `monster` table has two indexes over its owner
+  (`server-module/src/schema.rs`). The single-column `owner_identity` serves reads that need every
+  monster an owner holds: re-key, erase, export and `has_monsters`. `owner_party` is a btree over
+  `(owner_identity, party_slot)`. Every party read on a per-input or per-tick path goes through its
+  `(owner, 0..PARTY_SLOT_NONE)` range, which yields the party in slot order. Those reads are
+  `battle::lead_party_ids` (every accepted `enqueue_move`, the tick's band check, the tactical
+  start, `refresh_lead_level`) and `monster_mgmt::set_party_slot`'s occupied-slot read;
+  `raising::heal_party`, once per heal, still filters `owner_identity`. A compile-time assert in
+  `battle.rs` pins `PARTY_SLOT_NONE == u8::MAX`, because only then does the range mean "not in
+  Storage".
 - **`monster` vs `monster_pub`.** `monster` holds the hidden genes (IVs, EVs, nature)
   and server-side counters. `monster_pub` is the safe projection (derived stats, HP,
   party slot, tiers, essence). The server writes both together; the owner reads
@@ -735,7 +1144,8 @@ the owner of each binding are in `docs/refactors/client-shell.md`, and the extra
 make are listed in order in `docs/refactors/client-platform.md`. That plan also covers what the
 client takes from its host, so that one bundle runs in a browser tab and in a desktop shell: each
 such capability has one owner, listed there by call site. Most are web APIs every host provides,
-reached through a narrow type the real global satisfies or a DOM listener `main.ts` registers; a
+reached through a narrow type the real global satisfies (the storage hosts, the pad read, the key
+event, the media query, the window size) or a DOM listener `main.ts` or `connect` registers; a
 capability a second host must provide differently gets a port under `client/src/platform/`, whose
 default is the browser's code; the plan's first extraction creates the first of them.
 `shell/config.ts` holds the values fixed for the session,
@@ -872,6 +1282,13 @@ rebuilds the dirty views and no others, so a batch of `character` or `player` ro
 none. Every owner view is marked when the base subscription's snapshot applies, when a
 connection is built, when the store is reset, and when another table's row handler throws
 (the SDK then skips the rest of that message, whose rows are already in its cache).
+`createOwnerViewReconciler` (`markDirty`, `markAllDirty`, `reconcileOwnerViews`) holds the dirty
+set. `connection.ts` loops over `OWNER_VIEWS` to give each view's `onInsert` and `onDelete` handlers
+their mark; `markAllDirty` runs beside `store.reset()` on a drop, after every build's `wireTables`,
+and first in the base subscription's `onApplied`. A view is cleared once its reconcile returns, and
+a throw leaves it and the later dirty views of its try group dirty for the next batch. Every
+non-view row handler is wrapped in `recoverViewsOnThrow`, which marks every view, schedules the
+flush and rethrows. A new owner view gets a `RECONCILE` entry and a `TRY_GROUPS` slot.
 `my_conversation`, `my_wallet` and `my_account` are views too, but are ingested row by row.
 
 `net/store.ts` is a read-only mirror of the subscription. Only the connection adapter
@@ -894,7 +1311,13 @@ holds it only when the shell document carries `host: 'desktop'` and the kind is 
 page in a browser for every kind included, keeps it in per-tab `sessionStorage`, so an
 identity survives a reload but not closing the tab, and a second tab is a separate
 identity; for a `local` or `private` target kept per tab, `connect()` first removes that
-one target's token key from `localStorage` (`forgetDeviceToken`). After two token
+one target's token key from `localStorage` (`forgetDeviceToken(globalThis, uri, db)`, once
+before its first build). `createAuthTokenGate` takes the choice and uses exactly one area, never
+the other. `ConnectionOptions.targetKind` is required and `desktop` defaults to a browser;
+`connect()` builds its one gate from the two, and `main.ts` passes `TARGET_KIND` and
+`DESKTOP_SHELL`. `net/authToken.test.ts`, `net/connection.runtime.test.ts`,
+`main.targetKindGate.test.ts` and the browser spec `client/e2e/local-identity.spec.ts` hold the
+rule. After two token
 rejections since the last
 successful connect, the client stops sending the stored token (it never deletes it) and
 connects anonymously. If that connect succeeds, `onConnected` stores the new token over
@@ -906,6 +1329,18 @@ PKCE, `net/oidc.ts`) against the issuer in `VITE_MR_OIDC_ISSUER`. `main.ts` hand
 The Profile screen's Account section offers Sign In only when `connect` received an
 issuer, labelled with the build's `VITE_MR_OIDC_PROVIDER_NAME` (the issuer when the
 build names none); `signInOffer` in `ui/claimModel.ts` decides it from that one value.
+`main.ts` reads `VITE_MR_OIDC_ISSUER` in one module-scope assignment (`OIDC_ISSUER`), and every kind
+but `official` and `test` holds the empty string; `VITE_MR_OIDC_CLIENT_ID` also reaches the
+world-ticket client, which only a `local` or `private` target builds. `connect` gets `signIn:
+'oidc'` only when that issuer is non-empty, `'off'` otherwise; with `'off'` it builds no OIDC client
+and `startSignIn` only reports `'sign-in-off'`. The control reads `claim.signInWithProvider`. The
+e2e build sets the server's placeholder issuer `https://auth.monster-realm.invalid/` and a provider
+name (`client/playwright.config.ts`), so the browser suite runs the labelled sign-in and its
+fail-safe; the hidden control is proven by the DOM view tests and `main.targetKindGate.test.ts`. Two
+tests hold both of the kind's gates: `client/src/observability/config.test.ts` (every kind but
+`official` and `test` resolves disabled) and `client/src/main.targetKindGate.test.ts` (boots
+`main.ts` under each kind, and reads the Sign In control, the connection's sign-in calls and,
+through the real connection, every OIDC request).
 
 A server that admits only players who own the game refuses `join_game` with
 `ownership required`. `connect` sends no `join_game` from an anonymous connection once
@@ -920,7 +1355,11 @@ which the main menu frame shows in place of its entries (`openSignInGate`,
 with a row that opens the store. Nothing closes it, Escape included; it goes down when
 the own `player` row arrives. A target with no sign-in to offer (`local`, `private`, a
 build with no issuer) gets one status line instead of the screen, unless it is a `local` or
-`private` world's account check.
+`private` world's account check. `main.ts` answers Start's "close every frame" as B on the gate.
+`client/src/main.signInGate.test.ts` boots `main.ts` under each kind;
+`client/e2e/signin-gate.spec.ts` runs the flow against the `local-dev` account service and a
+dev-enforcing module, and `client/e2e/local-identity.spec.ts` holds the `official` pages it opens at
+the sign-in screen.
 
 `net/worldTicket.ts` owns that check's client half: `worldNameFor` (the world's name as a
 browser page authenticated it, or none, and then no ticket is asked for), the `TicketSource`
@@ -1267,8 +1706,10 @@ root, so opening one never closes a sibling.
   (`net/devLog.ts`).
 - Client telemetry (`observability/`) exports OpenTelemetry metrics over OTLP/HTTP to
   `VITE_MR_OTLP_ENDPOINT` when set and the target kind is `official` or `test`
-  (`resolveTelemetryConfig` decides on the kind first; a `local` or `private` target
-  never loads the SDK). It fails silently, loads the SDK only when
+  (`resolveTelemetryConfig` takes `TARGET_KIND` from `shell/config.ts` as a required parameter
+  and runs an exhaustive `switch` on it before it reads any env value: only `official` and `test`
+  reach the endpoint and interval rules, and a `local` or `private` target never loads the SDK).
+  It fails silently, loads the SDK only when
   enabled, and labels metrics with a small allowlist of attributes.
 
 ## Accounts lifecycle
@@ -1404,8 +1845,22 @@ root, so opening one never closes a sibling.
   oldest event's expiry, pulled in to 5 minutes out when an insert takes the table over
   the cap. It runs at most once per 5 minutes, so an event is reaped within 5 minutes of
   its expiry. `just playtest-report` summarises it.
-- **Load.** `sim-harness`'s `mr_load_driver` connects many WebSocket clients to a
-  live module and reads the breaking point from `/v1/metrics`. It never runs in CI.
+- **Load.** `sim-harness/src/bin/mr_load_driver.rs` is the load tool. Each bot holds what a walking
+  client holds of `player` and `character`: `SELECT * FROM player`, byte-identical to the client's,
+  plus its per-zone `character` queries. It holds none of the client's other tables, which walking
+  does not write. The report gives each level's received bytes per client per second, as a mean and
+  for the worst bot (`rx_bytes_per_client_per_s`, `rx_bytes_per_client_per_s_max`), over the
+  driver's own scrape window. `MAX_CLIENTS` is 1,000. With `--fail-on-invalid`, an invalid level
+  exits 3. The nightly `load-smoke` job publishes the `open_join` module build to an in-memory host
+  and runs `just load-smoke` (20 clients, one level, `--fail-on-invalid`), so the nightly goes red
+  when a level is invalid: no bot joins, a bot's zone scope never settles, or no move reaches the
+  server. A level where every move is rejected stays valid, as a measurement of a saturated server.
+  Runs over many zones use the load-only build from `just load-host` (`docs/DECISIONS.md`, "Dev-only
+  reducers never ship"). Reducer-thread share is the recording rule
+  `mr:reducer_thread_share:rate5m`, `sum by (reducer)
+  (rate(spacetime_txn_elapsed_time_sec_sum[5m]))` (`ops/observability/rules/recording.rules.yml`).
+  `promtool test rules` tests it under `just observability-validate`. The driver never runs in `just
+  ci`; the nightly smoke is its one CI run.
 
 ## Verification layout
 
@@ -1429,6 +1884,20 @@ ci`) applies it to the default build and `just release-module` to each artefact 
 The reducer census in `privacy_enforcement_tests.rs` refuses a `procedure` attribute outside
 `account_checks.rs`, and that file's `lpw34_7_unstable` module holds that the native test
 binary links with `unstable` on.
+
+The CI `e2e` job (`scripts/e2e-shard-union.mjs`) judges each shard by its highest attempt. When that
+attempt's reports are readable, it also reads every lower attempt of the shard. A test that is
+`unexpected` on a lower attempt and `expected` on the highest passed only on a rerun. The script
+prints a `rerun-passed:` line and one `::warning` annotation for each such test. It also appends a
+table of them to `$GITHUB_STEP_SUMMARY`, or "No e2e test passed only on a rerun." when there are
+none, on a failing run too. A lower attempt with no readable `e2e.json` gets a `rerun-unreadable:`
+line. The listing changes no verdict: a green highest attempt still passes the job. Playwright
+`retries` is unset, so a rerun of failed jobs is the only second attempt, and a report's `flaky`
+count stays a failure. `docs/e2e-flakes.md` registers the e2e flakes whose fix has not merged. Each
+entry gives the test, the runs, the signature, every forcing recipe tried with its counts, the
+verdict (product or test) and the next step. The change that fixes a flake deletes its entry. A test
+the listing names that has neither an entry nor a residual row of its own is a new flake and gets an
+entry. A flake that its own row holds may stay a row until a study takes it.
 
 The native test host is `server-module/src/native_host_tests.rs`. A procedure runs through
 `Fixture::run_procedure`: the host's `procedure_*` functions put an aborted transaction's rows
