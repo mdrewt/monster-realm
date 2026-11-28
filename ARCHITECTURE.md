@@ -789,12 +789,12 @@ production login issuer and holds no attestation key. The `world` build, which t
 the standalone server ship, holds the production attestation keys and trusts no login issuer. Both
 lists are constants of the build: `BuildProfile::attestation_keys` is empty on `official`, `default`
 and `conflict`, `PRODUCTION_ATTESTATION_KEYS` on `world` (empty, since no production key is
-published, so a `world` build binds nothing and entitles nobody) and `DEV_ATTESTATION_KEYS` (the
-published `local-dev` key; `hosted-dev` publishes none) on `test` and `dev-enforcing`; a test holds
-the lists to the generated `account-service/attestation-public-keys.json`. On a build with no key
-the six binding reducers (`bind_world_account`, `request_bind_nonce`, the owner-relayed form of
-each, `unbind_world_account` and `drop_world_binding`) return `this server takes no world binding`
-as their first statement, before anything is decoded, read or written; the unbind and the drop do so
+published, so a `world` build binds nothing) and `DEV_ATTESTATION_KEYS` (the published `local-dev`
+key; `hosted-dev` publishes none) on `test` and `dev-enforcing`; a test holds the lists to the
+generated `account-service/attestation-public-keys.json`. On a build with no key the six binding
+reducers (`bind_world_account`, `request_bind_nonce`, the owner-relayed form of each,
+`unbind_world_account` and `drop_world_binding`) return `this server takes no world binding` as
+their first statement, before anything is decoded, read or written; the unbind and the drop do so
 only on a build that also names no account service to ask. A binding records the `kid` that signed
 it, and no rule reads a binding on any build. On the `world` build every token is an anonymous
 guest's. The two builds have one schema and one set of client bindings. The builds also differ by
@@ -1328,18 +1328,18 @@ PKCE, `net/oidc.ts`) against the issuer in `VITE_MR_OIDC_ISSUER`. `main.ts` hand
 The Profile screen's Account section offers Sign In only when `connect` received an
 issuer, labelled with the build's `VITE_MR_OIDC_PROVIDER_NAME` (the issuer when the
 build names none); `signInOffer` in `ui/claimModel.ts` decides it from that one value.
-`main.ts` reads `VITE_MR_OIDC_ISSUER` in that one module-scope assignment, and any other kind holds
-the empty string; `VITE_MR_OIDC_CLIENT_ID` also reaches the world-ticket client, which only a
-`local` or `private` target builds. `connect` gets `signIn: 'oidc'` only when that issuer is
-non-empty, `'off'` otherwise; with `'off'` it builds no OIDC client and `startSignIn` only reports
-`'sign-in-off'`. The control reads `claim.signInWithProvider`. The e2e build sets the server's
-placeholder issuer `https://auth.monster-realm.invalid/` and a provider name
-(`client/playwright.config.ts`), so the browser suite runs the labelled sign-in and its fail-safe;
-the hidden control is proven by the DOM view tests and `main.targetKindGate.test.ts`. Two tests hold
-both of the kind's gates: `client/src/observability/config.test.ts` (every kind but `official` and
-`test` resolves disabled) and `client/src/main.targetKindGate.test.ts` (boots `main.ts` under each
-kind, and reads the Sign In control, the connection's sign-in calls and, through the real
-connection, every OIDC request).
+`main.ts` reads `VITE_MR_OIDC_ISSUER` in one module-scope assignment (`OIDC_ISSUER`), and every kind
+but `official` and `test` holds the empty string; `VITE_MR_OIDC_CLIENT_ID` also reaches the
+world-ticket client, which only a `local` or `private` target builds. `connect` gets `signIn:
+'oidc'` only when that issuer is non-empty, `'off'` otherwise; with `'off'` it builds no OIDC client
+and `startSignIn` only reports `'sign-in-off'`. The control reads `claim.signInWithProvider`. The
+e2e build sets the server's placeholder issuer `https://auth.monster-realm.invalid/` and a provider
+name (`client/playwright.config.ts`), so the browser suite runs the labelled sign-in and its
+fail-safe; the hidden control is proven by the DOM view tests and `main.targetKindGate.test.ts`. Two
+tests hold both of the kind's gates: `client/src/observability/config.test.ts` (every kind but
+`official` and `test` resolves disabled) and `client/src/main.targetKindGate.test.ts` (boots
+`main.ts` under each kind, and reads the Sign In control, the connection's sign-in calls and,
+through the real connection, every OIDC request).
 
 A server that admits only players who own the game refuses `join_game` with
 `ownership required`. `connect` sends no `join_game` from an anonymous connection once
