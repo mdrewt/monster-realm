@@ -91,6 +91,7 @@ import type { PostStackToggles } from './render/postStack';
 import { RenderResolver, walkableIn } from './render/renderResolver';
 import { installResizeHandler } from './render/resizeWiring';
 import { type RenderEntity, WorldRenderer } from './render/world';
+import { commandPort, installCommandPort } from './shell/commandPort';
 import {
   ACCOUNT_REQUIRED,
   DB,
@@ -516,6 +517,9 @@ applyTextStep(document.documentElement, textStep);
 // The hint host `shell/feedback.ts` reaches up through, installed before the first listener
 // registers: whether the main menu is the top frame, and a repaint of it.
 installHintHost({ menuOnTop: () => menuPlace() === 'top', repaintMenu: renderMenu });
+// The command port `shell/commandPort.ts` holds, installed beside it: the dispatcher's run of one
+// command and its stack move, for the callers the module map puts below the dispatcher.
+installCommandPort({ dispatch, applyStack });
 // A fault of the Gamepad API (the pad source reports its first one only) goes to the error ring,
 // tagged so the F9 bundle tells it from a frame or handler throw.
 installPadFaultSink((err) => {
@@ -1388,7 +1392,7 @@ function closeTradeEditor(): void {
   syncStack();
   const top = contextStack[contextStack.length - 1];
   if (top.kind === 'screen' && top.id === 'tradeSessionView') {
-    void dispatch({ kind: 'pop' });
+    void commandPort.dispatch({ kind: 'pop' });
   } else if (tradeSessionView?.visible === true) {
     // Under another frame: the view hides and the sync takes its frame off the stack.
     tradeSessionView.hide();
@@ -1494,7 +1498,7 @@ function runInteract(action: InteractAction): void {
       // One open per partner at a time: a second press while the first is in flight sends nothing.
       if (pendingTradeOpen?.partner === partner && !tradeOpenExpired(pendingTradeOpen)) break;
       held.clear();
-      void dispatch({ kind: 'openTradeSession', partnerIdentity: partner });
+      void commandPort.dispatch({ kind: 'openTradeSession', partnerIdentity: partner });
       break;
     }
     case 'challenge':
@@ -1763,7 +1767,7 @@ function applyMenuStep(step: MainMenuStep, tab?: AccelPath['tab']): void {
     case 'signIn':
       // A world's gate has one action whatever its row says: the connection's account check.
       if (worldGate.phase !== 'hidden' && WORLD_ACCESS !== undefined) conn?.checkIn();
-      else void dispatch({ kind: 'claimSignIn' });
+      else void commandPort.dispatch({ kind: 'claimSignIn' });
       break;
     case 'store':
       openExternal(OWNERSHIP_STORE_URL);
@@ -1814,7 +1818,7 @@ function showSignInGate(): void {
     if (line !== undefined) reportError('connect-failure', line);
     return;
   }
-  if (menuPlace() !== 'top') applyStack(contextStack, popToBase(contextStack));
+  if (menuPlace() !== 'top') commandPort.applyStack(contextStack, popToBase(contextStack));
   openMenu();
   if (view.line.text !== saidGateLine) {
     saidGateLine = view.line.text;
@@ -3433,7 +3437,7 @@ function refreshBattle(): void {
 function popOverBattleBeforeSwitch(target: { readonly visible: boolean }): void {
   if (target.visible) return;
   const switching = battleViews().some((v) => v !== undefined && v !== target && v.visible);
-  if (switching) applyStack(contextStack, popPlayerFramesOverBattle(contextStack));
+  if (switching) commandPort.applyStack(contextStack, popPlayerFramesOverBattle(contextStack));
 }
 
 /** The one name rule for an own monster: the nickname, else the species name, else `#id`. */
@@ -3534,7 +3538,7 @@ function buildDeployPanel(
           },
     );
     deployPanel ??= new DeployPanel(battleMount, {
-      onDeploy: (battleId, picks) => dispatch({ kind: 'deployUnits', battleId, picks }),
+      onDeploy: (battleId, picks) => commandPort.dispatch({ kind: 'deployUnits', battleId, picks }),
     });
     tacticsShown = { battleId: row.battleId, mySide: mySideOf(row.battleId), kind: row.kind };
     return { kind: 'deploy', view: deployPanel, vm };
@@ -3596,7 +3600,7 @@ function buildResultsPanel(
     // Continue: pop the outcome frame, only while it is the top frame over the world (the same
     // predicate as A's continue); the pop latches the dismissed battle.
     onContinue: () => {
-      if (outcomeOnTop(contextStack)) void dispatch({ kind: 'pop' });
+      if (outcomeOnTop(contextStack)) void commandPort.dispatch({ kind: 'pop' });
     },
   });
   return { kind: 'results', view: resultsPanel, vm };
@@ -3781,9 +3785,10 @@ function tacticsShellDeps(): TacticsBattleDeps {
     },
     rules: tacticsRules,
     onSubmitQueue: (battleId, unitId, entries) =>
-      void dispatch({ kind: 'submitQueue', battleId, unitId, entries }),
-    onCancelQueue: (battleId, unitId) => void dispatch({ kind: 'cancelQueue', battleId, unitId }),
-    onForfeit: (battleId) => void dispatch({ kind: 'forfeit', battleId }),
+      void commandPort.dispatch({ kind: 'submitQueue', battleId, unitId, entries }),
+    onCancelQueue: (battleId, unitId) =>
+      void commandPort.dispatch({ kind: 'cancelQueue', battleId, unitId }),
+    onForfeit: (battleId) => void commandPort.dispatch({ kind: 'forfeit', battleId }),
     keycap,
     // Joined onto a notice still queued, never replacing it (the queue holds one).
     announce: (text) =>
