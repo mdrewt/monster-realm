@@ -2534,8 +2534,8 @@ same at every check, and not a credential.
 The attestation binding is compiled beside it (`server-module/src/world_binding.rs`: the
 tables `world_binding` and `world_bind_nonce`, their two views, the four nonce and bind reducers
 and the verifier). It records a binding that nothing reads: it entitles and admits nobody, and
-it is to be removed with `POST /attest`. Not built: the client's half, and the gate that refuses a
-caller who is not entitled in every reducer. Proved by
+it is to be removed with `POST /attest`. A caller who is not entitled is refused by every reducer a
+player plays through (see "Ownership is enforced unless a dev feature switches it off"). Proved by
 `server-module/src/account_checks_tests.rs` and, for the host's own check,
 `server-module/src/account_checks_host_tests.rs` on the native test host, with every answer of the
 service stubbed. That host runs a scheduled procedure as the scheduler would call it and runs no
@@ -2855,7 +2855,7 @@ no rule reads a binding on any build. On the `world` build
 every token is an anonymous guest's. The two builds have one schema and one set of client bindings.
 The builds also differ by the account service a world asks about an account
 (`BuildProfile::world_check_url`, the `POST /world/check` address). `official`, `default` and
-`conflict` name none: each of the three account-check procedures answers `this server checks no
+`conflict` name none: each of the four account-check procedures answers `this server checks no
 account` as its first statement, and `entitled(ctx, profile)` reads no `world_account` row there,
 so the official build has the login token as its one way in. `world` names the production service,
 a placeholder under a reserved name that answers nothing, so a `world` build entitles nobody until
@@ -2935,9 +2935,12 @@ give every server a name (weighed for browser joiners and not chosen).
 **Decision.** While a world's access rule is `Password` or `Allowlist`, the connect reducer
 refuses, as its first statement, an identity that `access::is_admitted` does not admit
 (`access::require_admitted_at_connect`), and every reducer of the generated client roster that is
-not owner-only opens with `access::require_admitted`, except `unbind_world_account`, which makes no
-admission check (see "A private world checks an account itself: a one-use ticket at first contact, then the account's handle"); the owner-only ones are `sync_content`, `set_world_access`,
-`set_world_names`, `set_world_allowlist`, `drop_world_binding` and the two relayed binding reducers.
+not owner-only makes that admission check, except `unbind_world_account`, which makes none (see "A private world checks an account itself: a one-use ticket at first contact, then the account's handle"). The five reducers an account reaches whatever it owns make it through
+`access::require_rule_admits`, the access rule alone; the others make it through
+`access::require_admitted`, which makes it and then the ownership check (see "Ownership is enforced
+unless a dev feature switches it off", which names the five). The owner-only ones are
+`sync_content`, `set_world_access`, `set_world_names`, `set_world_allowlist`, `set_host_identity`,
+`drop_world_binding` and the two relayed binding reducers.
 The binding reducers answer their build's refusal before that check; it reads nothing. The
 procedure `check_account` makes the admission check before it sends anything and again before it
 stores an answer, and `check_account_for` the owner check. A world with no
@@ -2984,7 +2987,7 @@ module definition refuses each, on the default build (`just module-definition`, 
 on each artefact `just release-module` makes (`scripts/verify-release-reducers.mjs`, over
 `spacetimedb-standalone extract-schema`). All three sit behind the `spacetimedb` crate's
 `unstable` feature, which the workspace enables, so that check is what keeps them out (see "The
-crate's `unstable` feature is on; the generated definition is checked instead"). The same check and the deletion-gate census allow the three account-check procedures and no other. Built: the module's half (`server-module/src/access.rs`,
+crate's `unstable` feature is on; the generated definition is checked instead"). The same check and the deletion-gate census allow the four account-check procedures and no other. Built: the module's half (`server-module/src/access.rs`,
 and the list in `server-module/src/world_binding.rs`); `mod admission_roster` in
 `server-module/src/privacy_enforcement_tests.rs` takes the reducer roster from the generated
 bindings' file names and executes every shipped reducer as an unadmitted caller on a `Password`
@@ -3080,9 +3083,9 @@ another type, where review is the defence.
 
 **Decision.** Playing requires owning the game on Steam, in every way to play: the official
 server, a friend's server and a single-player world, and in a browser as well as the desktop
-build. On the official server `join_game` admits only a connection whose token, from our account
-service, carries the entitlement claim `mr_ent: ["base-game"]`; in a single-player or friends world
-it admits only an identity whose `world_account` row says its account owns the game (see
+build. On the official server every reducer a player plays through admits only a connection whose
+token, from our account service, carries the entitlement claim `mr_ent: ["base-game"]`; in a
+single-player or friends world it admits only an identity whose `world_account` row says its account owns the game (see
 "A private world checks an account itself: a one-use ticket at first contact, then the account's handle"). The account service issues the
 claim only after Steam's `CheckAppOwnership` reports an owned, permanent licence held by the player
 themself: a Family Sharing borrower, a free weekend and a PC café licence do not count, and a refund
@@ -3090,8 +3093,11 @@ removes entitlement at the next issuance (an hour at most on the official server
 players, must own the game in order to play").
 
 **Why.** The operator's ruling. The claim is checked by the module, not implied by the issuer, so
-a later free tier or demo changes what the service issues, not the module. Enforcing in `join_game`
-covers every gameplay reducer, because a player row exists only through it. Checking ownership at
+a later free tier or demo changes what the service issues, not the module. The check sits in the
+gate every gameplay reducer opens with because some reducers need no `player` row, and because in
+a single-player or friends world an identity that joined while entitled must be refused once the
+world stores that its account does not own the game (a refund, a ban), which a check made once at
+the join never sees. Checking ownership at
 every issuance, not once, lets a refund or a ban reach the official server within a token's life.
 Every Steam account can run App ID 480, and Steam's ownership check answers only for a publisher's
 own apps, so under 480 Steam proves a sign-in and never a purchase; the hosted dev issuer is
@@ -3104,7 +3110,14 @@ Family Sharing borrower as an owner (one policy function in the account service 
 issuer that takes another app id or the publisher key, asks Steam's ownership check, or entitles a
 Steam player by default as it does a dev account. Known
 limits, accepted: a host can patch the module on its own server to switch the rule off, and a
-player refunded after binding a world keeps playing there until its host removes them.
+player refunded after a world checked its account keeps playing there until that world's next
+check of the account is answered: a world asks about a player other than its host again only when
+the identity next connects, 10 minutes or more after it last asked (see "A private world checks an
+account itself: a one-use ticket at first contact, then the account's handle"), so a connection
+held open is not asked again,
+and from the call after a negative answer is stored every gated reducer refuses the identity. On
+the official server a connection that outlives its token keeps playing until it reconnects (see
+"Ownership is enforced unless a dev feature switches it off").
 
 ## Ownership is enforced unless a dev feature switches it off
 
@@ -3137,22 +3150,48 @@ sites, `client/e2e/global-setup.ts`, and the `just test`, `ci-fast` and mutation
 ship, and it does not depend on the default: it passes `--no-default-features`, and a release
 feature wins anyway.
 
-`join_game` calls `accounts::require_entitled` after the admission check and before the deletion
-gate. On an enforcing build the caller's connection must carry a token from one of the build's
-login issuers, addressed to `ALLOWED_AUDIENCE`, whose `mr_ent` claim names `base-game`, or hold a
-binding as below. Anyone else, an anonymous connection included, gets the one fixed error `ownership required`, and nothing
-is written. A build that does not enforce admits everyone and never reads the token. The claim is
+On an enforcing build the gate `access::require_admitted`, which every reducer a player plays
+through opens with, makes the ownership check straight after the access rule and before the
+reducer reads or writes anything else (`accounts::require_entitled` under `BUILD_PROFILE`). The
+caller's connection must carry a token from one of the build's login issuers, addressed to
+`ALLOWED_AUDIENCE`, whose `mr_ent` claim names `base-game`, or the caller's `world_account` row
+must say its account owns the game, as below (an attestation binding entitles nobody). Anyone else,
+an anonymous connection included, gets the one fixed error `ownership required`, and nothing is
+written; this holds whether or not the identity has joined. An identity the access rule does not
+admit gets the admission refusal first, and nothing of ownership is read. A build that does not
+enforce admits everyone and never reads the token. The claim is
 read by a small scanner over the token's raw payload, since the module has no JSON crate
 (`token_names_entitlement`): exactly one top-level `mr_ent`, an array holding the string; a
 duplicate key, an escaped key or text the scanner cannot follow fails closed.
 
-The check gates `join_game`, the only way to a `player` row. The reducers that act on a monster the
-caller owns and need no `player` row (`care`, `train`, `evolve`, `set_nickname`,
-`set_party_slot`) do not make it. The account service gives an account that is not entitled no
-token, so such a caller connects as another identity that owns nothing. It matters for a database
-carried over from a build that did not enforce. The host checks a token's expiry at connect only,
-and `join_game` does not read `exp`, so a connection that outlives its token keeps playing until it
-reconnects.
+The 51 reducers of the generated client roster split four ways. 37 are gated, `join_game` among
+them and reducers that need no `player` row, such as `care`, `train`, `evolve`, `set_nickname` and
+`set_party_slot`; the two player binding reducers answer their build's refusal (`this server takes
+no world binding`) before the gate. 5 are the account's own and open with `access::require_rule_admits`, the
+access rule alone: `delete_account`, `cancel_account_deletion`, `request_data_export`,
+`start_guest_claim` and `complete_guest_claim`. 8 are owner-only and make their owner check and no
+ownership check (named in "A world that is not open refuses an unadmitted identity at connect and
+in every reducer; the owner relays the door"). `unbind_world_account` makes neither the admission
+check nor the ownership check. The connect reducer and the four account-check procedures of
+`server-module/src/account_checks.rs` ask nothing about ownership: where a world checks accounts
+itself, an identity becomes entitled by connecting and checking its account in.
+
+The gate reads what is stored when the call runs: the token the connection opened with and the
+caller's `world_account` row. It asks the account service nothing. So an identity that has joined
+is refused from the first call that finds it not entitled: after a re-check or the host's own check
+stores a negative answer, after the owner drops its row (`drop_world_binding`), after it unbinds,
+or after its character moved to another identity (the row then points at that identity).
+
+Accepted limits: the reducers that end something a player started (clearing a queue, forfeiting,
+cancelling a trade or a challenge, dismissing a dialogue) are gated like the rest. An identity that
+is not entitled ends what it started by closing its connection: when its last connection ends,
+`on_disconnect` (`server-module/src/lib.rs`) resolves its live trades, battles and challenges and
+deletes its conversation, character and `player` rows. Until then what it queued or staked runs on
+without it (the movement tick, the battle deadlines and the other side's confirm of a trade session
+are not calls of that identity), and the module cannot close a connection. Reading is not gated: a connection that is not entitled subscribes to whatever
+an admitted connection reads. A refused call logs one line and nothing limits how many. The host
+checks a token's expiry at connect only and the gate does not read `exp`, so a connection that
+outlives its token keeps playing until it reconnects.
 
 The artefact carries its profile as the wasm custom section `mr_build_profile` (`profile=`,
 `enforces_ownership=`, `dev_reducers=`, then a `login_issuer=` line per issuer), which `just
@@ -3169,7 +3208,15 @@ embedded or published. The code is proved by `server-module/src/accounts_tests.r
 over all 64 feature sets, `acs6_claim`, `acs6_door`, `acs6_section`); by
 `server-module/src/movement_tests.rs`, where `acs6_enforcing` runs the real reducer on a real
 dev-enforcing build through one line of `just test` (`--no-default-features --features
-monster-realm-module/dev_issuers`) and `acs6_open` runs it on a test build; by `justfile.test.mjs`;
+monster-realm-module/dev_issuers`) and `acs6_open` runs it on a test build; by
+`server-module/src/privacy_enforcement_tests.rs`, where `mod admission_roster` holds each reducer
+of the generated bindings in exactly one of the four kinds above, so a reducer added later is gated
+or the test fails, and on the dev-enforcing build runs every gated reducer as an admitted caller
+who is not entitled; by `mod ownership_gate` in `server-module/src/access_tests.rs`, the gate over
+constructed profiles, enforcing and not; by the `acs6_enforcing_*` modules of
+`world_binding_tests.rs`, `accounts_tests.rs`, `privacy_tests.rs`, `content_tests.rs` and
+`access_tests.rs`, which run each exempt reducer on the dev-enforcing build as a caller who is not
+entitled; by `justfile.test.mjs`;
 and by `evals/account-e2e.eval.mjs`, which on a live host publishes a dev-enforcing build
 (anonymous and unentitled tokens refused, an entitled one joins) and the `official` artefact `just
 release-module` built (anonymous and a dev-issuer token refused, no `account` row).
@@ -3183,7 +3230,7 @@ connection with no row, one whose row says the account does not own the game and
 only an attestation binding are all refused by `join_game` with `ownership required`, under
 `Open`, `Password` and `Allowlist` (`mod acs6_enforcing_bound` in
 `server-module/src/world_binding_tests.rs`; `mod open_join_unbound` holds an unbound join accepted
-under `open_join`). The `local-dev` attestation key is fixed and can be derived from this repository
+under `open_join`). Every other gated reducer refuses them the same way. The `local-dev` attestation key is fixed and can be derived from this repository
 (`account-service/src/keys.ts`), so anyone can sign with it: a `dev_issuers` build's ownership check
 in a `local` or `private` world stops nobody who signs with that key. No feature set gives a build
 the `hosted-dev` attestation keys alone, and `hosted-dev` publishes none; a dev build that has to
@@ -3195,6 +3242,12 @@ once `open_join` leaves `default` what they build admits nobody. Until then the 
 build, and a module to ship comes only from `just release-module`, which names no default. The only
 way to an open module is to name a dev feature, which no recipe that ships does. It is the rule dev
 behaviour already follows (see "Dev-only reducers never ship"): the dev thing is the opt-in.
+The ownership rule is made where the admission rule is, in the one gate, so the roster that proves
+every reducer makes the access check proves this one too and a reducer added later cannot leave it
+out. The reducers that do not ask are the ones a player who is not entitled must still reach:
+deleting or exporting their data is theirs to do whatever the account owns, a guest claim attaches
+progress already made to an account and plays nothing, the unbind is how a player leaves a world,
+and the owner's reducers run the world, the host's own account check among them.
 
 **Rules out.** A feature that switches enforcement on (the build nobody configured would admit
 anyone and trust the dev keys); an environment variable or a row as the switch; conditional
@@ -3202,7 +3255,10 @@ compilation of the constants (a branch no build compiles is a branch nothing che
 module to ship any other way than the recipe; telling builds apart by `spacetime describe --json`,
 which reads the same for every one; a `local-dev` attestation key made per machine, as its login
 key is (a build's keys are constants computed from its features, and a key that differs per
-machine would need a build input the feature set does not have). Accepted cost: every site that
+machine would need a build input the feature set does not have); an ownership call copied into
+each reducer, or a list of exempt names read inside the gate (its `reducer` argument is a log
+label); an ownership check on the account's deletion, export or claim reducers, on the unbind or on
+an owner-only reducer. Accepted cost: every site that
 builds or publishes for anonymous play names `open_join` once `open_join` leaves `default`; until
 then those sites get it from the default.
 

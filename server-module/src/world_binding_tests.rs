@@ -739,7 +739,7 @@ fn set_allow(fx: &Fixture, caller: Identity, list: Vec<String>) -> Result<(), St
 
 fn passes(fx: &Fixture, who: Identity, ms: i64) -> Result<(), String> {
     call(fx, who, ms, |ctx| {
-        crate::access::require_admitted(ctx, "probe")
+        crate::access::require_rule_admits(ctx, "probe")
     })
 }
 
@@ -3447,6 +3447,495 @@ mod acs6_enforcing_unbind {
     #[test]
     fn under_allowlist_the_unbound_owner_is_refused_the_join_lpw22_6() {
         assert_refused_once_unbound(WorldAccessRule::Allowlist, owner(), OWNER_HANDLE);
+    }
+}
+
+// =====================================================================================
+// The dev-enforcing build: the caller's own nonce and bind reducers refuse a caller that is
+// not entitled, and run for one that is.
+// =====================================================================================
+
+#[cfg(all(feature = "dev_issuers", not(feature = "open_join")))]
+mod acs6_enforcing_gate {
+    use super::*;
+    use crate::accounts::ERR_OWNERSHIP_REQUIRED;
+
+    const RULES: [WorldAccessRule; 3] = [
+        WorldAccessRule::Open,
+        WorldAccessRule::Password,
+        WorldAccessRule::Allowlist,
+    ];
+
+    /// What [`alice`] holds in `world_account` when she is not entitled: no row, or a row
+    /// that says `entitled: false`.
+    const UNENTITLED: [Option<bool>; 2] = [None, Some(false)];
+
+    fn what(rule: WorldAccessRule, row: Option<bool>) -> String {
+        match row {
+            None => format!("{rule:?}, no row"),
+            Some(entitled) => format!("{rule:?}, a row that says entitled: {entitled}"),
+        }
+    }
+
+    /// [`valid_world`] under `rule`, where [`alice`] holds a `world_account` row under
+    /// [`HANDLE`] that says `row` (none for `None`) and the rule admits her: under `Allowlist`
+    /// by her listed handle when she holds a row, by an admission row otherwise. The bystander
+    /// [`bob`] holds a row that says entitled. Over a connection with no token, [`alice`] is
+    /// entitled exactly when her row says so.
+    fn gated_world(fx: &Fixture, rule: WorldAccessRule, row: Option<bool>) -> W<'_> {
+        let w = valid_world(fx);
+        if rule != WorldAccessRule::Open {
+            w.access.seed(&rule_row(rule));
+        }
+        if let Some(entitled) = row {
+            w.accounts
+                .seed(&account_row(alice(), HANDLE, entitled, T0 - 5_000));
+        }
+        match (rule, row) {
+            (WorldAccessRule::Open, _) => {}
+            (WorldAccessRule::Allowlist, Some(_)) => seed_allowed(&w, &[HANDLE]),
+            _ => w.admission.seed(&admission_row(alice())),
+        }
+        w.accounts
+            .seed(&account_row(bob(), OTHER_HANDLE, true, T0 - 5_000));
+        let label = what(rule, row);
+        assert_eq!(
+            passes(fx, alice(), BIND_AT),
+            Ok(()),
+            "fixture: {label}: the rule admits the caller"
+        );
+        assert_eq!(
+            call(fx, alice(), BIND_AT, |ctx| {
+                crate::accounts::entitled(ctx, &crate::accounts::BUILD_PROFILE)
+            }),
+            row == Some(true),
+            "fixture: {label}: the caller is entitled exactly when its row says so"
+        );
+        w
+    }
+
+    /// A caller the rule admits and that is not entitled asks for a nonce: the ownership
+    /// error, and its nonce, every other row and every write count as seeded.
+    ///
+    /// kills: `request_bind_nonce` with no ownership check; the check made after the nonce is
+    /// written; the check reading the bystander's row.
+    #[test]
+    fn a_nonce_request_by_a_caller_that_is_not_entitled_is_refused_under_every_rule_lpw36_1() {
+        for rule in RULES {
+            for row in UNENTITLED {
+                let fx = fixture();
+                let w = gated_world(&fx, rule, row);
+                assert_refused(&fx, &w, ERR_OWNERSHIP_REQUIRED, &what(rule, row), || {
+                    ask(&fx, alice(), BIND_AT)
+                });
+            }
+        }
+    }
+
+    /// A caller the rule admits and that is not entitled presents an attestation, for its own
+    /// nonce or for another: the ownership error, no binding written and its nonce kept.
+    ///
+    /// kills: `bind_world_account` with no ownership check; the check made after the bind; the
+    /// binding path's own refusal answered first.
+    #[test]
+    fn a_bind_by_a_caller_that_is_not_entitled_is_refused_under_every_rule_lpw36_1() {
+        let attestations = [
+            ("its own nonce", dev_attestation(&Claims::new(NONCE_A))),
+            ("another nonce", dev_attestation(&Claims::new(NONCE_B))),
+        ];
+        for rule in RULES {
+            for row in UNENTITLED {
+                for (which, att) in &attestations {
+                    let fx = fixture();
+                    let w = gated_world(&fx, rule, row);
+                    let label = format!("{}, {which}", what(rule, row));
+                    assert_refused(&fx, &w, ERR_OWNERSHIP_REQUIRED, &label, || {
+                        bind(&fx, alice(), BIND_AT, att)
+                    });
+                }
+            }
+        }
+    }
+
+    /// The same caller with a row that says entitled gets a fresh nonce; the bystander's stays.
+    ///
+    /// kills: a gate that refuses every caller; a gate blind to the `world_account` row.
+    #[test]
+    fn a_caller_whose_row_says_entitled_gets_a_nonce_under_every_rule_lpw36_1() {
+        for rule in RULES {
+            let fx = fixture();
+            let w = gated_world(&fx, rule, Some(true));
+            assert_eq!(ask(&fx, alice(), BIND_AT), Ok(()), "{rule:?}");
+            let (nonce, expires) = nonce_of(&w, alice()).expect("alice holds a nonce");
+            assert!(
+                is_lower_hex_nonce(&nonce),
+                "{rule:?}: 32 lowercase hex: {nonce}"
+            );
+            assert_eq!(
+                expires,
+                BIND_AT + BIND_NONCE_TTL_MS,
+                "{rule:?}: the nonce is the call's"
+            );
+            assert_eq!(
+                nonce_of(&w, bob()),
+                Some((NONCE_B.to_string(), NONCE_EXPIRES)),
+                "{rule:?}: the bystander's nonce"
+            );
+        }
+    }
+
+    /// The same caller with a row that says entitled binds and spends its nonce.
+    ///
+    /// kills: a gate that refuses every caller; a gate blind to the `world_account` row.
+    #[test]
+    fn a_caller_whose_row_says_entitled_binds_under_every_rule_lpw36_1() {
+        for rule in RULES {
+            let fx = fixture();
+            let w = gated_world(&fx, rule, Some(true));
+            let att = dev_attestation(&Claims::new(NONCE_A));
+            assert_eq!(bind(&fx, alice(), BIND_AT, &att), Ok(()), "{rule:?}");
+            assert_eq!(
+                bindings(&w),
+                sorted(vec![
+                    bview(alice(), SUB, BIND_AT, true, dev_kid()),
+                    bview(bob(), OTHER_SUB, T0 - 5_000, true, dev_kid()),
+                ]),
+                "{rule:?}: the caller is bound"
+            );
+            assert_eq!(nonce_of(&w, alice()), None, "{rule:?}: its nonce is spent");
+        }
+    }
+
+    /// The same caller with a row that says entitled, presenting an attestation for another
+    /// nonce, gets the binding path's own refusal and nothing is written.
+    ///
+    /// kills: the ownership error answered to an entitled caller.
+    #[test]
+    fn a_caller_whose_row_says_entitled_gets_the_binds_own_refusal_lpw36_1() {
+        for rule in RULES {
+            let fx = fixture();
+            let w = gated_world(&fx, rule, Some(true));
+            let att = dev_attestation(&Claims::new(NONCE_B));
+            assert_refused(
+                &fx,
+                &w,
+                REJECT_ATTESTATION_OTHER_NONCE,
+                &format!("{rule:?}"),
+                || bind(&fx, alice(), BIND_AT, &att),
+            );
+        }
+    }
+}
+
+// =====================================================================================
+// The dev-enforcing build: the unbind and the owner's reducers run for a caller that is not
+// entitled.
+// =====================================================================================
+
+#[cfg(all(feature = "dev_issuers", not(feature = "open_join")))]
+mod acs6_enforcing_exempt {
+    use super::*;
+    use crate::account_checks::{set_host_identity, HOST_CHECK_INTERVAL_MS};
+    use spacetimedb::{ScheduleAt, TimeDuration};
+
+    /// `who`'s `world_account` row under `handle`, checked at `T0 - 5_000`.
+    fn account(who: Identity, handle: &str, entitled: bool, is_host: bool) -> WorldAccount {
+        WorldAccount {
+            is_host,
+            ..account_row(who, handle, entitled, T0 - 5_000)
+        }
+    }
+
+    /// The owner's row, which says its account does not own the game.
+    fn owner_row() -> WorldAccount {
+        account(owner(), OWNER_HANDLE, false, false)
+    }
+
+    /// Over a connection with no token, `who` is not entitled on this build.
+    fn assert_not_entitled(fx: &Fixture, who: Identity, label: &str) {
+        assert!(
+            !call(fx, who, T0, |ctx| {
+                crate::accounts::entitled(ctx, &crate::accounts::BUILD_PROFILE)
+            }),
+            "fixture: {label} is not entitled on this build"
+        );
+    }
+
+    /// `fp` without the entries of the tables in `changed`.
+    fn but(fp: &Footprint, changed: &[&str]) -> Footprint {
+        fp.iter()
+            .filter(|(table, _, _)| !changed.contains(table))
+            .cloned()
+            .collect()
+    }
+
+    /// `act` answers `Ok`, and every registered table outside `changed` holds what it held
+    /// before, with no write call.
+    fn assert_runs(
+        fx: &Fixture,
+        w: &W<'_>,
+        changed: &[&str],
+        label: &str,
+        act: impl FnOnce() -> Result<(), String>,
+    ) {
+        fx.reset_writes();
+        let before = footprint(fx, w);
+        assert_eq!(act(), Ok(()), "{label}");
+        assert_eq!(
+            but(&footprint(fx, w), changed),
+            but(&before, changed),
+            "{label}: every other table as it was, with no write call"
+        );
+    }
+
+    /// [`valid_world`] with `world_admission` writable, where [`alice`] holds a row that says
+    /// not entitled, an armed re-check and an admission row, and the bystander [`bob`] holds
+    /// the same three with a row that says entitled.
+    fn checked_world(fx: &Fixture) -> W<'_> {
+        let w = valid_world(fx);
+        let _ = fx
+            .table::<WorldAdmission>("world_admission", "identity", |r| r.identity)
+            .unique()
+            .writable();
+        w.accounts.seed(&account(alice(), HANDLE, false, false));
+        w.accounts.seed(&account(bob(), OTHER_HANDLE, true, false));
+        w.rechecks.seed(&recheck_row(alice(), 1));
+        w.rechecks.seed(&recheck_row(bob(), 2));
+        w.admission.seed(&admission_row(alice()));
+        w.admission.seed(&admission_row(bob()));
+        w
+    }
+
+    /// A caller that is not entitled unbinds: its row, its re-check, its admission row and
+    /// its nonce go, and the bystander's rows stay.
+    ///
+    /// kills: an ownership check at the head of `unbind_world_account`.
+    #[test]
+    fn a_caller_that_is_not_entitled_unbinds_and_its_row_goes_lpw36_2() {
+        let fx = fixture();
+        let w = checked_world(&fx);
+        assert_not_entitled(&fx, alice(), "the caller");
+        assert_runs(
+            &fx,
+            &w,
+            &[
+                "world_account",
+                "recheck_schedule",
+                "world_admission",
+                "world_bind_nonce",
+            ],
+            "the unbind",
+            || unbind(&fx, alice(), BIND_AT),
+        );
+        assert_eq!(
+            encs(&w.accounts.rows()),
+            encs(&[account(bob(), OTHER_HANDLE, true, false)]),
+            "the caller's row goes; the bystander's stays"
+        );
+        assert_eq!(
+            encs(&w.rechecks.rows()),
+            encs(&[recheck_row(bob(), 2)]),
+            "the caller's re-check goes"
+        );
+        assert_eq!(
+            encs(&w.admission.rows()),
+            encs(&[admission_row(bob())]),
+            "the caller's admission row goes"
+        );
+        assert_eq!(
+            nonces(&w),
+            vec![nview(bob(), NONCE_B, NONCE_EXPIRES)],
+            "the caller's nonce goes"
+        );
+    }
+
+    /// The owner, not entitled, replaces the world's names: the set is stored and nothing
+    /// else is written.
+    ///
+    /// kills: an ownership check inside the owner check of `set_world_names`.
+    #[test]
+    fn the_owner_that_is_not_entitled_sets_the_world_names_lpw36_2() {
+        let fx = fixture();
+        let w = owned_world(&fx);
+        seed_names(&w, &[WORLD]);
+        w.accounts.seed(&owner_row());
+        assert_not_entitled(&fx, owner(), "the owner");
+        let other = "spki:other-fingerprint/realm";
+        assert_runs(&fx, &w, &["world_name"], "set_world_names", || {
+            set_names(&fx, owner(), strings(&[WORLD, other]))
+        });
+        assert_eq!(names(&w), sorted(strings(&[WORLD, other])), "the names");
+        assert_eq!(
+            fx.writes_to("host_check_schedule"),
+            0,
+            "no check is armed, so none is reset"
+        );
+    }
+
+    /// The owner, not entitled, replaces the host's list: the set is stored and nothing else
+    /// is written.
+    ///
+    /// kills: an ownership check inside the owner check of `set_world_allowlist`.
+    #[test]
+    fn the_owner_that_is_not_entitled_sets_the_allowlist_lpw36_2() {
+        let fx = fixture();
+        let w = owned_world(&fx);
+        seed_allowed(&w, &["dev:stale"]);
+        w.accounts.seed(&owner_row());
+        assert_not_entitled(&fx, owner(), "the owner");
+        assert_runs(&fx, &w, &["world_allowlist"], "set_world_allowlist", || {
+            set_allow(&fx, owner(), strings(&[SUB, OTHER_SUB]))
+        });
+        assert_eq!(allowed(&w), sorted(strings(&[SUB, OTHER_SUB])), "the list");
+    }
+
+    /// The owner, not entitled, drops [`alice`]: her row, re-check, admission row and nonce
+    /// go; the owner's row and the bystander's rows stay.
+    ///
+    /// kills: an ownership check inside the owner check of `drop_world_binding`.
+    #[test]
+    fn the_owner_that_is_not_entitled_drops_a_binding_lpw36_2() {
+        let fx = fixture();
+        let w = checked_world(&fx);
+        w.accounts.seed(&owner_row());
+        assert_not_entitled(&fx, owner(), "the owner");
+        assert_runs(
+            &fx,
+            &w,
+            &[
+                "world_account",
+                "recheck_schedule",
+                "world_admission",
+                "world_bind_nonce",
+            ],
+            "drop_world_binding",
+            || drop_binding_of(&fx, owner(), alice(), BIND_AT),
+        );
+        assert_eq!(
+            encs(&w.accounts.rows()),
+            encs(&[owner_row(), account(bob(), OTHER_HANDLE, true, false)]),
+            "alice's row goes"
+        );
+        assert_eq!(
+            encs(&w.rechecks.rows()),
+            encs(&[recheck_row(bob(), 2)]),
+            "alice's re-check goes"
+        );
+        assert_eq!(
+            encs(&w.admission.rows()),
+            encs(&[admission_row(bob())]),
+            "alice's admission row goes"
+        );
+        assert_eq!(
+            nonces(&w),
+            vec![nview(bob(), NONCE_B, NONCE_EXPIRES)],
+            "alice's nonce goes"
+        );
+    }
+
+    /// The owner, not entitled, asks for [`alice`]'s nonce: she holds one fresh row.
+    ///
+    /// kills: an ownership check inside the owner check of `request_bind_nonce_for`.
+    #[test]
+    fn the_owner_that_is_not_entitled_requests_a_nonce_for_who_lpw36_2() {
+        let fx = fixture();
+        let w = owned_world(&fx);
+        w.accounts.seed(&owner_row());
+        assert_not_entitled(&fx, owner(), "the owner");
+        assert_runs(
+            &fx,
+            &w,
+            &["world_bind_nonce"],
+            "request_bind_nonce_for",
+            || ask_for(&fx, owner(), alice(), T0),
+        );
+        let rows = nonces(&w);
+        assert_eq!(rows.len(), 1, "one row: {rows:?}");
+        assert_eq!(rows[0].0, alice().to_byte_array(), "alice's row");
+        assert!(
+            is_lower_hex_nonce(&rows[0].1),
+            "32 lowercase hex: {}",
+            rows[0].1
+        );
+        assert_eq!(rows[0].2, T0 + BIND_NONCE_TTL_MS, "the call's nonce");
+    }
+
+    /// The owner, not entitled, relays [`alice`]'s attestation: she is bound and her nonce
+    /// spent; the bystander's binding and nonce stay.
+    ///
+    /// kills: an ownership check inside the owner check of `bind_world_account_for`.
+    #[test]
+    fn the_owner_that_is_not_entitled_relays_a_bind_lpw36_2() {
+        let fx = fixture();
+        let w = valid_world(&fx);
+        w.accounts.seed(&owner_row());
+        assert_not_entitled(&fx, owner(), "the owner");
+        let att = dev_attestation(&Claims::new(NONCE_A));
+        assert_runs(
+            &fx,
+            &w,
+            &["world_binding", "world_bind_nonce"],
+            "bind_world_account_for",
+            || bind_for(&fx, owner(), alice(), BIND_AT, &att),
+        );
+        assert_eq!(
+            bindings(&w),
+            sorted(vec![
+                bview(alice(), SUB, BIND_AT, true, dev_kid()),
+                bview(bob(), OTHER_SUB, T0 - 5_000, true, dev_kid()),
+            ]),
+            "alice is bound"
+        );
+        assert_eq!(
+            nonces(&w),
+            vec![nview(bob(), NONCE_B, NONCE_EXPIRES)],
+            "alice's nonce is spent"
+        );
+    }
+
+    /// The owner, not entitled, names itself the host: its row is marked, the bystander's
+    /// mark is cleared, and one hourly check with no success yet is armed.
+    ///
+    /// kills: an ownership check inside the owner check of `set_host_identity`.
+    #[test]
+    fn the_owner_that_is_not_entitled_names_the_host_identity_lpw36_2() {
+        let fx = fixture();
+        let w = owned_world(&fx);
+        let ticks = fx
+            .table_keyed::<HostCheckSchedule, u64>("host_check_schedule", "scheduled_id", |r| {
+                r.scheduled_id
+            })
+            .unique()
+            .writable()
+            .scannable()
+            .auto_inc(|r| r.scheduled_id, |r, v| r.scheduled_id = v);
+        w.accounts.seed(&owner_row());
+        w.accounts.seed(&account(bob(), OTHER_HANDLE, true, true));
+        assert_not_entitled(&fx, owner(), "the owner");
+        assert_runs(&fx, &w, &["world_account"], "set_host_identity", || {
+            call(&fx, owner(), T0, |ctx| set_host_identity(ctx, owner()))
+        });
+        assert_eq!(
+            fx.writes_to("world_account"),
+            2,
+            "the owner's row and the bystander's"
+        );
+        assert_eq!(
+            encs(&w.accounts.rows()),
+            encs(&[
+                account(owner(), OWNER_HANDLE, false, true),
+                account(bob(), OTHER_HANDLE, true, false),
+            ]),
+            "the owner's row is marked; the bystander's mark is cleared"
+        );
+        let armed = ticks.rows();
+        assert_eq!(armed.len(), 1, "one check armed");
+        assert_eq!(armed[0].last_success_ms, None, "no success yet");
+        assert_eq!(
+            armed[0].scheduled_at,
+            ScheduleAt::Interval(TimeDuration::from_micros(HOST_CHECK_INTERVAL_MS * 1000)),
+            "armed hourly"
+        );
     }
 }
 

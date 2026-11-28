@@ -8702,6 +8702,74 @@ fn an_export_holds_the_callers_handle_and_no_other_identitys_ih1_8() {
     );
 }
 
+/// On the dev-enforcing build a subject who does not own the game is served its export.
+#[cfg(all(feature = "dev_issuers", not(feature = "open_join")))]
+mod acs6_enforcing_data_export {
+    use super::{
+        ih1_export_world, ih1_player_json, m22s4_expected_payload, m22s4_id,
+        m22s4_manifest_exportable,
+    };
+
+    /// A `player` row and no `world_account` row: the caller is not entitled, and its bundle
+    /// holds one chunk per exportable table, the `player` chunk its own row, while a stranger
+    /// gets no chunk.
+    ///
+    /// kills: the ownership check in the account reducers' gate (a player who does not own
+    /// the game is refused a copy of its own data).
+    #[test]
+    fn request_data_export_by_a_subject_who_does_not_own_the_game_writes_its_bundle_lpw36_2() {
+        let at = |ms: i64| spacetimedb::Timestamp::from_micros_since_unix_epoch(ms * 1000);
+        let t0: i64 = 1_700_000_000_000;
+        let caller = m22s4_id(0xE6);
+        let stranger = m22s4_id(0xE7);
+        let fx = crate::native_host_tests::fixture();
+        let w = ih1_export_world(&fx);
+        w.seed_player(caller, 41, 4_207, 13);
+        w.seed_player(stranger, 42, 9_000_001, 9);
+        assert!(
+            !fx.run_as_at(caller, at(t0), |ctx| {
+                crate::accounts::entitled(ctx, &crate::accounts::BUILD_PROFILE)
+            }),
+            "fixture: the caller is not entitled on this build"
+        );
+        fx.reset_writes();
+
+        assert_eq!(
+            fx.run_as_at(caller, at(t0), crate::privacy::request_data_export),
+            Ok(()),
+            "the caller's export is served"
+        );
+        let chunks = w.chunks_of(caller);
+        let mut names: Vec<String> = chunks.iter().map(|(t, _)| t.clone()).collect();
+        names.sort_unstable();
+        let mut exportable = m22s4_manifest_exportable();
+        exportable.sort_unstable();
+        assert_eq!(names, exportable, "one chunk per exportable table");
+        let player_chunks: Vec<String> = chunks
+            .iter()
+            .filter(|(t, _)| t == "player")
+            .map(|(_, p)| p.clone())
+            .collect();
+        assert_eq!(
+            player_chunks,
+            vec![m22s4_expected_payload(
+                "player",
+                &[ih1_player_json(caller, 41, 4_207, 13)]
+            )],
+            "the player chunk holds the caller's own row"
+        );
+        assert!(
+            w.chunks_of(stranger).is_empty(),
+            "the stranger is written no chunk"
+        );
+        assert_eq!(
+            fx.writes_to("export_bundle"),
+            u32::try_from(chunks.len()).expect("a bundle's chunk count fits a u32"),
+            "one write per chunk of the bundle"
+        );
+    }
+}
+
 // --- the value table and the word-bounded census ----------------------------
 
 /// The tier seam's value table: `(what, has_account, has_wallet, ceiling)`,

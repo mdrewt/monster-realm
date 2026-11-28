@@ -2474,6 +2474,60 @@ mod nh_sync {
         }
     }
 
+    /// On the dev-enforcing build the world's owner, with no token and no `world_account`
+    /// row, runs `sync_content` to the end.
+    #[cfg(all(feature = "dev_issuers", not(feature = "open_join")))]
+    mod acs6_enforcing_sync_content {
+        use super::{
+            other_numbers, owner, protocol_rows, seed_config, the_modules_numbers, version, world,
+        };
+        use crate::CONTENT_VERSION;
+
+        /// A stale version, a missing species row and foreign protocol numbers: the owner who
+        /// is not entitled reseeds the content, stamps the version and restores the numbers.
+        ///
+        /// kills: an ownership check at the head of `sync_content` (the owner who does not
+        /// own the game cannot publish content to its own world).
+        #[test]
+        fn sync_content_by_the_owner_who_does_not_own_the_game_reseeds_and_stamps_lpw36_2() {
+            let fx = crate::native_host_tests::fixture();
+            let w = world(&fx);
+            fx.run_as(owner(), crate::init);
+            let victim = w.species.rows()[0].id;
+            assert_eq!(
+                w.species.remove(victim),
+                1,
+                "fixture: one species row removed"
+            );
+            w.module_info.remove(0);
+            w.module_info.seed(&other_numbers());
+            seed_config(&w, 0);
+            assert!(
+                !fx.run_as(owner(), |ctx| {
+                    crate::accounts::entitled(ctx, &crate::accounts::BUILD_PROFILE)
+                }),
+                "fixture: the owner is not entitled on this build"
+            );
+
+            assert_eq!(fx.run_as(owner(), crate::sync_content), Ok(()));
+            assert_eq!(version(&w), CONTENT_VERSION, "the version is stamped");
+            assert!(
+                w.species.rows().iter().any(|r| r.id == victim),
+                "the reseed restores species {victim}"
+            );
+            assert_eq!(
+                w.species.rows().len(),
+                game_core::load_species().expect("species RON").len(),
+                "one species row per RON species"
+            );
+            assert_eq!(
+                protocol_rows(&w),
+                the_modules_numbers(),
+                "the module's protocol numbers are restored"
+            );
+        }
+    }
+
     /// With the numbers already current, the owner's `sync_content` writes no
     /// `module_info` row on the skip path nor on the reseed path, and the row's bytes
     /// stay as they were. The read count proves the table is registered and was

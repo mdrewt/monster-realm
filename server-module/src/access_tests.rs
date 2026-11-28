@@ -2987,3 +2987,913 @@ mod handle_seeding {
         );
     }
 }
+
+// =====================================================================================
+// The gate under a profile it is given: the access rule, then ownership under that profile.
+// Every profile is built here from its features, so these tests answer the same on every build.
+// =====================================================================================
+
+mod ownership_gate {
+    use super::*;
+    use crate::access::{require_admitted_under, require_rule_admits};
+    use crate::account_checks::WorldAccount;
+    use crate::accounts::{
+        build_profile, entitled, BuildFeatures, BuildProfile, ALLOWED_AUDIENCE, DEV_LOGIN_ISSUERS,
+        ENTITLEMENT_BASE_GAME, ERR_OWNERSHIP_REQUIRED, PRODUCTION_LOGIN_ISSUERS,
+    };
+
+    const HANDLE: &str = "k1.gate-0a0b0c0d";
+    const OWNER_HANDLE: &str = "k1.owner-a1a1a1a1";
+    const NOT_JSON: &str = "not json at all";
+    const RULES: [WorldAccessRule; 2] = [WorldAccessRule::Open, WorldAccessRule::Password];
+
+    /// An identity holding an admission row in every [`gate_world`].
+    fn let_in() -> Identity {
+        id(0x91)
+    }
+
+    /// An identity that is not the owner and holds no admission row.
+    fn stranger() -> Identity {
+        id(0x92)
+    }
+
+    fn feats(named: &[&str]) -> BuildFeatures {
+        let mut f = BuildFeatures {
+            official: false,
+            world: false,
+            dev_issuers: false,
+            open_join: false,
+            dev_reducers: false,
+            load_test_zones: false,
+        };
+        for n in named {
+            match *n {
+                "official" => f.official = true,
+                "world" => f.world = true,
+                "dev_issuers" => f.dev_issuers = true,
+                "open_join" => f.open_join = true,
+                "dev_reducers" => f.dev_reducers = true,
+                "load_test_zones" => f.load_test_zones = true,
+                other => panic!("not a feature of the module: {other}"),
+            }
+        }
+        f
+    }
+
+    /// The profile `named` builds, which must be the one called `name`.
+    fn profile(named: &[&str], name: &str) -> BuildProfile {
+        let p = build_profile(feats(named));
+        assert_eq!(
+            p.name, name,
+            "fixture: {named:?} builds the `{name}` profile"
+        );
+        p
+    }
+
+    fn dev_enforcing() -> BuildProfile {
+        profile(&["dev_issuers"], "dev-enforcing")
+    }
+
+    fn world_build() -> BuildProfile {
+        profile(&["world"], "world")
+    }
+
+    fn official() -> BuildProfile {
+        profile(&["official"], "official")
+    }
+
+    fn no_feature() -> BuildProfile {
+        profile(&[], "default")
+    }
+
+    /// The four profiles that enforce ownership.
+    fn enforcing_profiles() -> Vec<BuildProfile> {
+        let out = vec![dev_enforcing(), world_build(), official(), no_feature()];
+        for p in &out {
+            assert!(p.enforces_ownership, "fixture: `{}` enforces", p.name);
+        }
+        out
+    }
+
+    /// The three dev features that switch enforcement off, each alone.
+    fn open_profiles() -> Vec<(&'static str, BuildProfile)> {
+        let out = vec![
+            ("open_join", profile(&["open_join"], "test")),
+            ("dev_reducers", profile(&["dev_reducers"], "test")),
+            ("load_test_zones", profile(&["load_test_zones"], "test")),
+        ];
+        for (named, p) in &out {
+            assert!(!p.enforces_ownership, "fixture: `{named}` does not enforce");
+        }
+        out
+    }
+
+    /// A token from `iss` for this application; it names the base game when `claim`.
+    fn token(iss: &str, claim: bool) -> String {
+        let ent = if claim {
+            format!(r#","mr_ent":["{ENTITLEMENT_BASE_GAME}"]"#)
+        } else {
+            String::new()
+        };
+        format!(
+            r#"{{"iss":"{iss}","sub":"s","aud":"{}"{ent},"iat":1,"exp":2}}"#,
+            ALLOWED_AUDIENCE[0]
+        )
+    }
+
+    /// The token the host mints for a connection that brought none.
+    fn host_minted() -> String {
+        r#"{"iss":"localhost","sub":"host-sub","aud":["spacetimedb"],"iat":1}"#.to_string()
+    }
+
+    fn account_row(who: Identity, handle: &str, is_entitled: bool) -> WorldAccount {
+        WorldAccount {
+            handle: handle.to_string(),
+            identity: who,
+            entitled: is_entitled,
+            checked_at_ms: T0 - 1_000,
+            is_host: false,
+        }
+    }
+
+    /// [`world`] owned by [`owner`] under `rule`, with [`let_in`]'s admission row, and a handle
+    /// on `world_account` by `identity` (scannable, never writable).
+    struct G<'a> {
+        w: W<'a>,
+        accounts: Handle<'a, WorldAccount>,
+    }
+
+    fn gate_world(fx: &Fixture, rule: WorldAccessRule) -> G<'_> {
+        let w = world(fx);
+        seed_owner(&w, owner());
+        w.access.seed(&stored_row(rule));
+        w.admission.seed(&admission_row(let_in(), T0 - 5));
+        G {
+            w,
+            accounts: fx
+                .table::<WorldAccount>("world_account", "identity", |r| r.identity)
+                .unique()
+                .scannable(),
+        }
+    }
+
+    /// Every stored row of the seven registered tables, with each table's write count.
+    fn everything(fx: &Fixture, g: &G<'_>) -> Vec<(&'static str, Vec<Vec<u8>>, u32)> {
+        let mut out = footprint(fx, &g.w);
+        out.push((
+            "world_account",
+            encs(&g.accounts.rows()),
+            fx.writes_to("world_account"),
+        ));
+        out
+    }
+
+    /// The gate under `p`, as `who` over a client connection carrying `jwt`.
+    fn gate(
+        fx: &Fixture,
+        p: &BuildProfile,
+        who: Identity,
+        jwt: Option<&str>,
+    ) -> Result<(), String> {
+        fx.run_as_conn_at(who, conn_of(who), jwt, at(T0), |ctx| {
+            require_admitted_under(ctx, p, "care")
+        })
+    }
+
+    fn is_entitled(fx: &Fixture, p: &BuildProfile, who: Identity, jwt: Option<&str>) -> bool {
+        fx.run_as_conn_at(who, conn_of(who), jwt, at(T0), |ctx| entitled(ctx, p))
+    }
+
+    fn rule_admits(fx: &Fixture, who: Identity, jwt: Option<&str>) -> Result<(), String> {
+        fx.run_as_conn_at(who, conn_of(who), jwt, at(T0), |ctx| {
+            require_rule_admits(ctx, "delete_account")
+        })
+    }
+
+    /// `who` is not entitled under `p`, and the gate under `p` refuses it with exactly the
+    /// ownership error and writes nothing.
+    #[track_caller]
+    fn assert_refused(
+        fx: &Fixture,
+        g: &G<'_>,
+        p: &BuildProfile,
+        who: Identity,
+        jwt: Option<&str>,
+        case: &str,
+    ) {
+        assert!(
+            !is_entitled(fx, p, who, jwt),
+            "{case}: fixture: not entitled under `{}`",
+            p.name
+        );
+        fx.reset_writes();
+        let before = everything(fx, g);
+        assert_eq!(
+            gate(fx, p, who, jwt),
+            Err(ERR_OWNERSHIP_REQUIRED.to_string()),
+            "{case}, under `{}`",
+            p.name
+        );
+        assert_eq!(
+            everything(fx, g),
+            before,
+            "{case}, under `{}`: the refusal writes nothing",
+            p.name
+        );
+    }
+
+    /// The gate under `p` passes `who` and writes nothing.
+    #[track_caller]
+    fn assert_passes(
+        fx: &Fixture,
+        g: &G<'_>,
+        p: &BuildProfile,
+        who: Identity,
+        jwt: Option<&str>,
+        case: &str,
+    ) {
+        fx.reset_writes();
+        let before = everything(fx, g);
+        assert_eq!(gate(fx, p, who, jwt), Ok(()), "{case}, under `{}`", p.name);
+        assert_eq!(
+            everything(fx, g),
+            before,
+            "{case}, under `{}`: passing writes nothing",
+            p.name
+        );
+    }
+
+    // --- an enforcing profile refuses a caller the rule admits and that is not entitled ----
+
+    /// kills: a gate that never asks about ownership; ownership asked under this build's profile
+    /// in place of the one given; the host-minted token read as an entitlement; another
+    /// identity's row read for the caller.
+    #[test]
+    fn an_admitted_caller_with_no_token_and_no_row_is_refused_under_every_enforcing_profile_lpw36_1(
+    ) {
+        let host = host_minted();
+        for p in enforcing_profiles() {
+            for rule in RULES {
+                let fx = fixture();
+                let g = gate_world(&fx, rule);
+                g.accounts.seed(&account_row(owner(), OWNER_HANDLE, true));
+                assert_refused(&fx, &g, &p, let_in(), None, &format!("{rule:?}, no token"));
+                assert_refused(
+                    &fx,
+                    &g,
+                    &p,
+                    let_in(),
+                    Some(host.as_str()),
+                    &format!("{rule:?}, the host-minted token"),
+                );
+            }
+        }
+    }
+
+    /// kills: the row's `entitled` ignored; a token from a trusted issuer read as an entitlement
+    /// without the claim.
+    #[test]
+    fn a_caller_whose_row_says_not_entitled_and_whose_token_lacks_the_claim_is_refused_under_every_enforcing_profile_lpw36_1(
+    ) {
+        for p in enforcing_profiles() {
+            let claimless = p.login_issuers.first().map(|iss| token(iss, false));
+            for rule in RULES {
+                let fx = fixture();
+                let g = gate_world(&fx, rule);
+                g.accounts.seed(&account_row(let_in(), HANDLE, false));
+                g.accounts.seed(&account_row(owner(), OWNER_HANDLE, true));
+                assert_refused(
+                    &fx,
+                    &g,
+                    &p,
+                    let_in(),
+                    None,
+                    &format!("{rule:?}, a row that says not entitled"),
+                );
+                if let Some(t) = &claimless {
+                    assert_refused(
+                        &fx,
+                        &g,
+                        &p,
+                        let_in(),
+                        Some(t.as_str()),
+                        &format!("{rule:?}, that row and a trusted token without the claim"),
+                    );
+                }
+            }
+        }
+    }
+
+    /// The world's owner, not entitled, is refused like anyone: on a `Password` world it holds
+    /// no admission row and the rule admits it. So is the database identity on an `Open` world.
+    /// The control: the owner with a row that says entitled passes where the profile names an
+    /// account service.
+    ///
+    /// kills: the owner, or the database identity, exempted from the ownership check.
+    #[test]
+    fn the_world_owner_who_is_not_entitled_is_refused_like_anyone_under_every_enforcing_profile_lpw36_1(
+    ) {
+        for p in enforcing_profiles() {
+            let fx = fixture();
+            let g = gate_world(&fx, WorldAccessRule::Password);
+            assert_eq!(
+                admitted_at(&g.w, owner()),
+                None,
+                "fixture: no admission row"
+            );
+            assert_eq!(
+                rule_admits(&fx, owner(), None),
+                Ok(()),
+                "fixture: the rule admits the owner"
+            );
+            assert_refused(&fx, &g, &p, owner(), None, "the world's owner");
+        }
+        for p in enforcing_profiles() {
+            let fx = fixture();
+            let g = gate_world(&fx, WorldAccessRule::Open);
+            let database = id(0xD5);
+            fx.set_database_identity(database);
+            assert_refused(&fx, &g, &p, database, None, "the database identity");
+        }
+        let p = dev_enforcing();
+        let fx = fixture();
+        let g = gate_world(&fx, WorldAccessRule::Password);
+        g.accounts.seed(&account_row(owner(), OWNER_HANDLE, true));
+        assert_passes(&fx, &g, &p, owner(), None, "the owner with an entitled row");
+    }
+
+    /// On a `Password` world an unadmitted caller gets the admission refusal under every
+    /// enforcing profile, and `world_account` hands out no row, though it holds the caller's row
+    /// (saying entitled, and saying not).
+    ///
+    /// kills: the ownership check made before the admission check; an ownership refusal in
+    /// place of the admission refusal.
+    #[test]
+    fn an_unadmitted_caller_gets_the_admission_refusal_with_no_ownership_read_under_every_enforcing_profile_lpw36_1(
+    ) {
+        for p in enforcing_profiles() {
+            for says in [false, true] {
+                let fx = fixture();
+                let g = gate_world(&fx, WorldAccessRule::Password);
+                g.accounts.seed(&account_row(stranger(), HANDLE, says));
+                fx.reset_writes();
+                let before = everything(&fx, &g);
+                fx.reset_reads();
+                assert_eq!(
+                    gate(&fx, &p, stranger(), None),
+                    Err(REJECT_NOT_ADMITTED.to_string()),
+                    "under `{}`, its row says entitled: {says}",
+                    p.name
+                );
+                assert_eq!(
+                    fx.rows_read("world_account"),
+                    0,
+                    "under `{}`, its row says entitled: {says}: no ownership read",
+                    p.name
+                );
+                assert_eq!(everything(&fx, &g), before, "the refusal writes nothing");
+            }
+        }
+    }
+
+    /// Where the profile names an account service (`dev-enforcing`, `world`), a row that says
+    /// entitled passes with no token, and the same row saying not entitled is refused.
+    ///
+    /// kills: a gate blind to the stored row; a gate that never asks about ownership.
+    #[test]
+    fn a_row_that_says_entitled_passes_and_one_that_says_not_is_refused_where_the_profile_names_an_account_service_lpw36_1(
+    ) {
+        for p in [dev_enforcing(), world_build()] {
+            assert!(
+                p.world_check_url.is_some(),
+                "fixture: `{}` names an account service",
+                p.name
+            );
+            for rule in RULES {
+                let fx = fixture();
+                let g = gate_world(&fx, rule);
+                g.accounts.seed(&account_row(let_in(), HANDLE, true));
+                assert_passes(
+                    &fx,
+                    &g,
+                    &p,
+                    let_in(),
+                    None,
+                    &format!("{rule:?}, a row that says entitled"),
+                );
+                assert_eq!(g.accounts.remove(let_in()), 1, "fixture: the row goes");
+                g.accounts.seed(&account_row(let_in(), HANDLE, false));
+                assert_refused(
+                    &fx,
+                    &g,
+                    &p,
+                    let_in(),
+                    None,
+                    &format!("{rule:?}, the same row saying not entitled"),
+                );
+            }
+        }
+    }
+
+    /// Where the profile names a login issuer (`dev-enforcing`, `official`), that issuer's token
+    /// naming the base game passes with no row; the same issuer's token without the claim is
+    /// refused, and so is a token naming the claim from an issuer the profile does not name.
+    ///
+    /// kills: a gate blind to the token; the claim not read; another profile's issuers trusted.
+    #[test]
+    fn a_token_from_the_profiles_issuer_naming_the_claim_passes_and_one_without_it_is_refused_lpw36_1(
+    ) {
+        for p in [dev_enforcing(), official()] {
+            let iss = *p
+                .login_issuers
+                .first()
+                .unwrap_or_else(|| panic!("fixture: `{}` names a login issuer", p.name));
+            let entitling = token(iss, true);
+            let claimless = token(iss, false);
+            let foreign: Vec<String> = DEV_LOGIN_ISSUERS
+                .iter()
+                .chain(PRODUCTION_LOGIN_ISSUERS.iter())
+                .filter(|other| !p.login_issuers.contains(*other))
+                .map(|other| token(other, true))
+                .collect();
+            assert!(
+                !foreign.is_empty(),
+                "fixture: an issuer `{}` does not name",
+                p.name
+            );
+            for rule in RULES {
+                let fx = fixture();
+                let g = gate_world(&fx, rule);
+                assert_passes(
+                    &fx,
+                    &g,
+                    &p,
+                    let_in(),
+                    Some(entitling.as_str()),
+                    &format!("{rule:?}, an entitling token"),
+                );
+                assert_refused(
+                    &fx,
+                    &g,
+                    &p,
+                    let_in(),
+                    Some(claimless.as_str()),
+                    &format!("{rule:?}, the same issuer's token without the claim"),
+                );
+                for t in &foreign {
+                    assert_refused(
+                        &fx,
+                        &g,
+                        &p,
+                        let_in(),
+                        Some(t.as_str()),
+                        &format!("{rule:?}, a token naming the claim from another issuer"),
+                    );
+                }
+            }
+        }
+    }
+
+    /// Where the profile names no account service (`official`, the no-feature profile), a row
+    /// that says entitled does not pass, and no row is read.
+    ///
+    /// kills: the stored row read on a profile that names no account service.
+    #[test]
+    fn a_row_that_says_entitled_does_not_pass_where_the_profile_names_no_account_service_lpw36_1() {
+        for p in [official(), no_feature()] {
+            assert!(
+                p.world_check_url.is_none(),
+                "fixture: `{}` names no account service",
+                p.name
+            );
+            for rule in RULES {
+                let fx = fixture();
+                let g = gate_world(&fx, rule);
+                g.accounts.seed(&account_row(let_in(), HANDLE, true));
+                fx.reset_reads();
+                assert_refused(
+                    &fx,
+                    &g,
+                    &p,
+                    let_in(),
+                    None,
+                    &format!("{rule:?}, a row that says entitled"),
+                );
+                assert_eq!(
+                    fx.rows_read("world_account"),
+                    0,
+                    "{rule:?}, under `{}`: no row is read",
+                    p.name
+                );
+            }
+        }
+    }
+
+    // --- a profile that does not enforce gates nothing about ownership ---------------------
+
+    /// kills: the gate enforcing whatever the profile says.
+    #[test]
+    fn a_caller_with_no_token_and_no_row_passes_under_every_profile_that_does_not_enforce_lpw36_3()
+    {
+        for (named, p) in open_profiles() {
+            for rule in RULES {
+                let fx = fixture();
+                let g = gate_world(&fx, rule);
+                fx.reset_reads();
+                assert_passes(
+                    &fx,
+                    &g,
+                    &p,
+                    let_in(),
+                    None,
+                    &format!("`{named}`, {rule:?}, no token and no row"),
+                );
+                assert_eq!(fx.rows_read("world_account"), 0, "`{named}`, {rule:?}");
+            }
+        }
+    }
+
+    /// A payload that is not JSON at all passes: the token is never read (reading it panics).
+    ///
+    /// kills: the token read on a profile that does not enforce.
+    #[test]
+    fn a_payload_that_is_not_json_passes_under_every_profile_that_does_not_enforce_lpw36_3() {
+        for (named, p) in open_profiles() {
+            for rule in RULES {
+                let fx = fixture();
+                let g = gate_world(&fx, rule);
+                assert_passes(
+                    &fx,
+                    &g,
+                    &p,
+                    let_in(),
+                    Some(NOT_JSON),
+                    &format!("`{named}`, {rule:?}, an unreadable payload"),
+                );
+            }
+        }
+    }
+
+    /// `world_account` hands out no row though it holds the caller's row saying
+    /// `entitled: false`, and the caller passes.
+    ///
+    /// kills: the stored row read on a profile that does not enforce.
+    #[test]
+    fn world_account_hands_out_no_row_under_a_profile_that_does_not_enforce_lpw36_3() {
+        for (named, p) in open_profiles() {
+            for rule in RULES {
+                let fx = fixture();
+                let g = gate_world(&fx, rule);
+                g.accounts.seed(&account_row(let_in(), HANDLE, false));
+                fx.reset_reads();
+                assert_passes(
+                    &fx,
+                    &g,
+                    &p,
+                    let_in(),
+                    None,
+                    &format!("`{named}`, {rule:?}, a row that says not entitled"),
+                );
+                assert_eq!(
+                    fx.rows_read("world_account"),
+                    0,
+                    "`{named}`, {rule:?}: no row is read"
+                );
+            }
+        }
+    }
+
+    // --- the access rule alone ---------------------------------------------------------------
+
+    /// The access rule alone admits a caller the dev-enforcing profile does not entitle (a row
+    /// that says not entitled, a trusted token without the claim, the owner with nothing) and
+    /// writes nothing; it refuses an unadmitted caller with the admission refusal.
+    ///
+    /// kills: an ownership check inside the access rule alone.
+    #[test]
+    fn the_access_rule_alone_admits_a_caller_that_an_enforcing_profile_does_not_entitle_lpw36_2() {
+        let dev = dev_enforcing();
+        let claimless = token(dev.login_issuers[0], false);
+        for rule in RULES {
+            let fx = fixture();
+            let g = gate_world(&fx, rule);
+            g.accounts.seed(&account_row(let_in(), HANDLE, false));
+            fx.reset_writes();
+            let before = everything(&fx, &g);
+            for (who, jwt, case) in [
+                (
+                    let_in(),
+                    Some(claimless.as_str()),
+                    "a row and a token, neither entitling",
+                ),
+                (let_in(), None, "a row that says not entitled, no token"),
+                (owner(), None, "the world's owner with nothing"),
+            ] {
+                assert!(
+                    !is_entitled(&fx, &dev, who, jwt),
+                    "{rule:?}, {case}: fixture: not entitled under `dev-enforcing`"
+                );
+                assert_eq!(rule_admits(&fx, who, jwt), Ok(()), "{rule:?}, {case}");
+            }
+            assert_eq!(everything(&fx, &g), before, "{rule:?}: nothing is written");
+        }
+        let fx = fixture();
+        let g = gate_world(&fx, WorldAccessRule::Password);
+        fx.reset_writes();
+        let before = everything(&fx, &g);
+        assert_eq!(
+            rule_admits(&fx, stranger(), None),
+            Err(REJECT_NOT_ADMITTED.to_string()),
+            "an unadmitted caller on a Password world"
+        );
+        assert_eq!(everything(&fx, &g), before, "the refusal writes nothing");
+    }
+
+    // --- the refusal is logged -----------------------------------------------------------------
+
+    /// Every `log` record of this test PROCESS. NEXTEST-ONLY, like movement_tests.rs's
+    /// `MvLogSink`: one logger may be installed per process, so plain `cargo test` (one process
+    /// for every test) fails all but the first installer.
+    struct GateLogSink(std::sync::Mutex<Vec<String>>);
+
+    impl log::Log for GateLogSink {
+        fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+            true
+        }
+        fn log(&self, record: &log::Record<'_>) {
+            self.0
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(record.args().to_string());
+        }
+        fn flush(&self) {}
+    }
+
+    static GATE_LOGS: GateLogSink = GateLogSink(std::sync::Mutex::new(Vec::new()));
+
+    /// The captured lines whose `evt` is `reject`.
+    fn reject_lines() -> Vec<String> {
+        GATE_LOGS
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|line| line.contains(r#""evt":"reject""#))
+            .cloned()
+            .collect()
+    }
+
+    fn clear_logs() {
+        GATE_LOGS
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+    }
+
+    /// The reject line for `reducer`, `who` and `reason`.
+    fn reject_line(reducer: &str, who: Identity, reason: &str) -> String {
+        format!(r#"{{"evt":"reject","reducer":"{reducer}","sender":"{who}","reason":"{reason}"}}"#)
+    }
+
+    /// The gate under `p` as `who` with no token, for the reducer `label`.
+    fn gate_for(fx: &Fixture, p: &BuildProfile, who: Identity, label: &str) -> Result<(), String> {
+        fx.run_as_conn_at(who, conn_of(who), None, at(T0), |ctx| {
+            require_admitted_under(ctx, p, label)
+        })
+    }
+
+    /// An ownership refusal is logged as exactly one reject line carrying the reducer the gate
+    /// was called for, the caller and the ownership reason, under every enforcing profile. An
+    /// admission refusal logs its own reason once and no ownership line; a caller that passes,
+    /// entitled or under a profile that does not enforce, logs nothing.
+    ///
+    /// kills: the ownership refusal returned without being logged; the ownership refusal logged
+    /// under a fixed reducer name in place of the one the gate was given; the ownership refusal
+    /// logged twice.
+    #[test]
+    fn the_gates_ownership_refusal_is_logged_once_under_the_reducer_it_was_called_for() {
+        log::set_logger(&GATE_LOGS).expect("no logger installed in this test process (nextest)");
+        log::set_max_level(log::LevelFilter::Info);
+
+        // a. an admitted caller, not entitled, under every enforcing profile.
+        for p in enforcing_profiles() {
+            for rule in RULES {
+                let fx = fixture();
+                let g = gate_world(&fx, rule);
+                g.accounts.seed(&account_row(owner(), OWNER_HANDLE, true));
+                assert!(
+                    !is_entitled(&fx, &p, let_in(), None),
+                    "fixture: not entitled under `{}`",
+                    p.name
+                );
+                let label = format!("gate_probe_{}_{rule:?}", p.name.replace('-', "_"));
+                clear_logs();
+                assert_eq!(
+                    gate_for(&fx, &p, let_in(), &label),
+                    Err(ERR_OWNERSHIP_REQUIRED.to_string()),
+                    "{rule:?}, under `{}`",
+                    p.name
+                );
+                assert_eq!(
+                    reject_lines(),
+                    vec![reject_line(&label, let_in(), ERR_OWNERSHIP_REQUIRED)],
+                    "{rule:?}, under `{}`: one reject line for the reducer the gate was given",
+                    p.name
+                );
+            }
+        }
+
+        // b. an unadmitted caller: the admission refusal, logged once, no ownership line.
+        {
+            let p = dev_enforcing();
+            let fx = fixture();
+            let g = gate_world(&fx, WorldAccessRule::Password);
+            assert_eq!(
+                admitted_at(&g.w, stranger()),
+                None,
+                "fixture: no admission row"
+            );
+            let label = "gate_probe_unadmitted";
+            clear_logs();
+            assert_eq!(
+                gate_for(&fx, &p, stranger(), label),
+                Err(REJECT_NOT_ADMITTED.to_string()),
+                "an unadmitted caller on a Password world"
+            );
+            let lines = reject_lines();
+            assert_eq!(
+                lines,
+                vec![reject_line(label, stranger(), REJECT_NOT_ADMITTED)],
+                "one admission reject line"
+            );
+            assert!(
+                lines.iter().all(|l| !l.contains(ERR_OWNERSHIP_REQUIRED)),
+                "no ownership line: {lines:?}"
+            );
+        }
+
+        // c. an entitled caller under an enforcing profile logs nothing.
+        {
+            let p = dev_enforcing();
+            assert!(
+                p.world_check_url.is_some(),
+                "fixture: `{}` names an account service",
+                p.name
+            );
+            let fx = fixture();
+            let g = gate_world(&fx, WorldAccessRule::Password);
+            g.accounts.seed(&account_row(let_in(), HANDLE, true));
+            assert!(
+                is_entitled(&fx, &p, let_in(), None),
+                "fixture: entitled by its row under `{}`",
+                p.name
+            );
+            clear_logs();
+            assert_eq!(
+                gate_for(&fx, &p, let_in(), "gate_probe_entitled"),
+                Ok(()),
+                "an entitled caller"
+            );
+            assert_eq!(
+                reject_lines(),
+                Vec::<String>::new(),
+                "an entitled caller logs nothing"
+            );
+        }
+
+        // d. a caller with nothing under a profile that does not enforce logs nothing.
+        {
+            let (named, open) = open_profiles()
+                .into_iter()
+                .next()
+                .expect("fixture: a profile that does not enforce");
+            let fx = fixture();
+            let _g = gate_world(&fx, WorldAccessRule::Password);
+            assert!(
+                !is_entitled(&fx, &dev_enforcing(), let_in(), None),
+                "fixture: the caller holds nothing an enforcing profile entitles"
+            );
+            clear_logs();
+            assert_eq!(
+                gate_for(&fx, &open, let_in(), "gate_probe_open"),
+                Ok(()),
+                "`{named}`, no token and no row"
+            );
+            assert_eq!(
+                reject_lines(),
+                Vec::<String>::new(),
+                "`{named}`: passing logs nothing"
+            );
+        }
+    }
+}
+
+// =====================================================================================
+// The test build does not enforce ownership: the shipped gate asks nothing about it.
+// =====================================================================================
+
+#[cfg(feature = "open_join")]
+mod open_join_gate {
+    use super::*;
+
+    /// The index an ownership check reads a caller's `world_account` row through.
+    const OWNERSHIP_INDEX: &str = "world_account_identity_idx_btree";
+
+    fn let_in() -> Identity {
+        id(0x93)
+    }
+
+    /// The shipped gate as [`let_in`], admitted on a `Password` world, over a client connection
+    /// carrying `jwt`: it passes, writes nothing, reads no `world_account` row and asks the host
+    /// for no `world_account` index.
+    fn assert_shipped_gate_passes(jwt: Option<&str>, case: &str) {
+        assert!(
+            !std::hint::black_box(crate::accounts::BUILD_PROFILE.enforces_ownership),
+            "fixture: this build does not enforce ownership"
+        );
+        let fx = fixture();
+        let w = password_world(&fx);
+        w.admission.seed(&admission_row(let_in(), T0 - 5));
+        fx.reset_writes();
+        let before = footprint(&fx, &w);
+        fx.reset_reads();
+        assert_eq!(
+            fx.run_as_conn_at(let_in(), conn_of(let_in()), jwt, at(T0), |ctx| {
+                require_admitted(ctx, "care")
+            }),
+            Ok(()),
+            "{case}"
+        );
+        let asked = fx.requested_indexes();
+        assert!(
+            !asked.iter().any(|index| index == OWNERSHIP_INDEX),
+            "{case}: the gate asked the host for {asked:?}"
+        );
+        assert_eq!(fx.rows_read("world_account"), 0, "{case}: no row is read");
+        assert_eq!(footprint(&fx, &w), before, "{case}: nothing is written");
+    }
+
+    /// kills: the shipped gate handed an enforcing profile in place of this build's.
+    #[test]
+    fn the_shipped_gate_passes_a_caller_with_no_token_and_no_row_and_asks_for_no_world_account_index_lpw36_3(
+    ) {
+        assert_shipped_gate_passes(None, "no token and no row");
+    }
+
+    /// kills: the shipped gate reading the token on a build that does not enforce.
+    #[test]
+    fn the_shipped_gate_passes_a_caller_whose_payload_is_not_json_lpw36_3() {
+        assert_shipped_gate_passes(Some("not json at all"), "an unreadable payload");
+    }
+}
+
+// =====================================================================================
+// The dev-enforcing build: the owner's own reducer runs for an owner who is not entitled.
+// =====================================================================================
+
+#[cfg(all(feature = "dev_issuers", not(feature = "open_join")))]
+mod acs6_enforcing_owner_access {
+    use super::*;
+    use crate::accounts::{entitled, BUILD_PROFILE};
+
+    /// The world's owner, not entitled on this build, sets `Password` and admits an identity:
+    /// the call answers `Ok`, stores the rule and the admission, and writes nothing else.
+    ///
+    /// kills: an ownership check inside the owner check.
+    #[test]
+    fn the_world_owner_who_is_not_entitled_sets_the_access_rule_as_it_does_today_lpw36_2() {
+        let fx = fixture();
+        let w = world(&fx);
+        seed_owner(&w, owner());
+        let x = id(0x94);
+        assert!(
+            !call(&fx, owner(), T0, |ctx| entitled(ctx, &BUILD_PROFILE)),
+            "fixture: the owner is not entitled on this build"
+        );
+        let config_before = encs(&w.config.rows());
+        fx.reset_writes();
+        assert_eq!(
+            set_access(&fx, owner(), WorldAccessRule::Password, vec![x], T0),
+            Ok(())
+        );
+        assert_eq!(access_row(&w), enc(&stored_row(WorldAccessRule::Password)));
+        assert_eq!(admissions(&w), vec![(x.to_byte_array(), T0)]);
+        assert_eq!(fx.writes_to("world_access"), 1, "the rule row is inserted");
+        assert_eq!(
+            fx.writes_to("world_admission"),
+            1,
+            "the admission is inserted"
+        );
+        assert_eq!(encs(&w.config.rows()), config_before);
+        for table in [
+            "config",
+            "world_admission_attempt",
+            "player_session",
+            "account",
+            "world_account",
+        ] {
+            assert_eq!(fx.writes_to(table), 0, "{table} takes no write");
+        }
+    }
+}
