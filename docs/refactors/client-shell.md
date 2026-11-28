@@ -231,7 +231,7 @@ listed, and a read a pump receives through its parameter object is a read by `ma
 | `evolutionNoticeOk` | `views.ts` | `interact` | `main()` boot: mount |
 | `deployPanel` | `battleFrame.ts` | `devHooks`, `main` | none |
 | `resultsPanel` | `battleFrame.ts` | `frames`, `devHooks`, `main` | none |
-| `tacticsBattle` | `battleFrame.ts` | `movement`, `commands`, `devHooks`, `main` | none |
+| `tacticsBattle` | `battleFrame.ts` | `commands`, `input`, `devHooks`, `main` | none |
 | `battleMount` | `battleFrame.ts` | none | `main()` boot: mount |
 | `tacticsRulesPort` | `battleFrame.ts` | none | none |
 | `tacticsTuning` | `battleFrame.ts` | none | none |

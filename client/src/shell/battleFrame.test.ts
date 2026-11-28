@@ -541,6 +541,41 @@ describe('shell/battleFrame', () => {
     expect(rec.dispatched).toEqual([]);
   });
 
+  it('Continue reads the port`s stack at the click: off top at the build, on top at the click dispatches one pop', async () => {
+    const { m, el, rec } = await booted();
+    let current: Stack = [{ kind: 'battle', battleId: '31' }];
+    m.bf.installBattlePort({ stack: () => current, clearOutcomeEdge: () => undefined });
+    showResults(m, 31n);
+    current = WORLD_OUTCOME;
+    const button = el.querySelector<HTMLButtonElement>('.tactics-results-continue');
+    if (button === null) throw new Error('fixture: the results panel has no Continue button');
+    button.click();
+    expect(rec.dispatched).toEqual([{ kind: 'pop' }]);
+  });
+
+  it('Continue reads the port`s stack at the click: on top at the build, off top at the click dispatches nothing', async () => {
+    const { m, el, rec } = await booted();
+    let current: Stack = WORLD_OUTCOME;
+    m.bf.installBattlePort({ stack: () => current, clearOutcomeEdge: () => undefined });
+    showResults(m, 31n);
+    current = [{ kind: 'battle', battleId: '31' }];
+    const button = el.querySelector<HTMLButtonElement>('.tactics-results-continue');
+    if (button === null) throw new Error('fixture: the results panel has no Continue button');
+    button.click();
+    expect(rec.dispatched).toEqual([]);
+  });
+
+  it('a second mountBattleFrame is the element a later build goes into', async () => {
+    const { m, el } = await booted();
+    const second = document.createElement('div');
+    document.body.append(second);
+    m.bf.mountBattleFrame(second);
+    seedPvpDeploying(m, 31n);
+    m.bf.refreshBattle();
+    expect(second.querySelector('.tactics-deploy')?.parentElement).toBe(second);
+    expect(el.childElementCount).toBe(0);
+  });
+
   it('feedServerClock feeds the shown deploy panel`s battle clocks at Date.now', async () => {
     const { m } = await booted();
     seedPvpDeploying(m, 31n);
@@ -820,6 +855,41 @@ describe('shell/battleFrame', () => {
       expect(m.bf.resultsAwaitDrain, 'fixture: the results wait').toBe(71n);
       m.bf.resetBattleFrame();
       expect(m.bf.resultsAwaitDrain).toBeNull();
+    });
+
+    /** The visible shell plays battle 71's last events while its results wait. */
+    async function resultsWaiting(): Promise<{ m: Loaded; el: HTMLElement }> {
+      const { m, el } = await booted();
+      m.bf.installBattlePort(spyPort(BATTLE_UNDER_FRAMES));
+      seedWildActive(m, 71n, [roundEvent(71n, 0)]);
+      m.bf.refreshBattle();
+      finishWild(m, 71n, [roundEvent(71n, 0), roundEvent(71n, 1)]);
+      m.bf.refreshBattle();
+      expect(m.bf.resultsAwaitDrain, 'fixture: the results wait').toBe(71n);
+      return { m, el };
+    }
+
+    /** The shell's root is hidden, the frame shows nothing, and the clock is fed nothing. */
+    function expectShellDropped(m: Loaded, el: HTMLElement): void {
+      expect(m.bf.resultsAwaitDrain).toBeNull();
+      expect(m.bf.tacticsBattle?.visible).toBe(false);
+      expect(el.querySelector<HTMLElement>('.tactics-battle')?.style.display).toBe('none');
+      expect(m.bf.battleFrameShown()).toBe(false);
+      feedAt(m, 71n, 10_000n, 1_000);
+      feedAt(m, 71n, 50_000n, 2_000);
+      expect(m.bf.serverClock.now(0)).toBe(0);
+    }
+
+    it('continueOutcome during a results wait ends the wait, hides the shell and stops the clock feed', async () => {
+      const { m, el } = await resultsWaiting();
+      m.bf.continueOutcome();
+      expectShellDropped(m, el);
+    });
+
+    it('hideAllBattleViews during a results wait ends the wait, hides the shell and stops the clock feed', async () => {
+      const { m, el } = await resultsWaiting();
+      m.bf.hideAllBattleViews();
+      expectShellDropped(m, el);
     });
 
     it('a Finished batch with nothing to play shows the results at once and leaves the outcome edge alone', async () => {

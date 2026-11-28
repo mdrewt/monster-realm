@@ -11,8 +11,8 @@
 // before it registers its first listener; until then each member throws. `main()` mounts the
 // element the views are built in (`mountBattleFrame`), `resetPredictionState` resets the battle
 // and tactics state (`resetBattleFrame`), and `closeFrame` continues the outcome
-// (`continueOutcome`). The views' handlers run commands through the command port. The module
-// registers no listener and writes nothing to the document until a view is built.
+// (`continueOutcome`). The views' handlers run commands through the command port. Its module
+// scope registers nothing and writes nothing to the document.
 
 // bt-12: the tactics rules port is bound from the whole pkg namespace, LAZILY (`tacticsRules()`): the
 // test mocks of this module carry only the names main.ts and shell/config.ts import by name, and `bindTacticsRules`
