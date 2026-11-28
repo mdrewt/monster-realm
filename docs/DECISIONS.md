@@ -1940,13 +1940,13 @@ contains the playtest database name fails.
 
 **Why.** The same client must join a single-player world the game starts, a friends server and the
 official server (see "One game, three ways to play: no code may assume we run the server"). A page
-global set by a classic script is read synchronously, so the fail-loud throw stays at module scope where
-no `try` in `main()` can swallow it, and the unit suites that import `main.ts` issue no request. The
+global set by a classic script is read synchronously, so the fail-loud throw stays at module scope
+where no `try` in `main()` can swallow it, and importing the client module issues no request. The
 `uri` rules exist because the SDK resolves its endpoint relative to the `uri` while the client keys
-credentials on the raw string: a spelling the URL parser rewrites (a query, a missing trailing slash, a
-`..` segment) would be keyed as one target and dialled as another. The omitted-`kind` default is the
-most restricted kind, so nothing keyed on the kind is granted by omission. The dev-database refusal is
-a guard by name against a released client writing into the dev loop's data.
+credentials on the raw string: a spelling the URL parser rewrites (a query, a missing trailing
+slash, a `..` segment) would be keyed as one target and dialled as another. The omitted-`kind`
+default is the most restricted kind, so nothing keyed on the kind is granted by omission. The
+dev-database refusal is a guard by name against a released client writing into the dev loop's data.
 
 **Rules out.** Reading `import.meta.env.VITE_STDB_*` (or any build-time server address) in client code;
 fetching the document at start-up (an asynchronous read moves the throw out of module scope); deriving
@@ -1998,7 +1998,7 @@ port's function through one page global, the shell bridge, set before the client
 hook that sets the shell document; it holds functions only, and a verb it does not hold runs the
 browser's code. Every shell implements the same bridge, so one bundle runs in a tab, in Electron and
 in Tauri. The first port is the hand-off to the operating system: open an address outside the game,
-save a file the client made.
+save a file the client made. No port is built yet.
 
 **Why.** The recorded shell is Electron, and that choice rests on an overlay nobody has measured: the
 measurement runs a Tauri window beside it with the same bundle and may reverse the choice. A desktop
@@ -2058,17 +2058,17 @@ and the kind decides at run time whether the client sends telemetry and whether 
 sign-in: only `official` and `test` get either. The telemetry resolver takes the kind as a required
 input and decides on it before it reads any env value, so a `local` or `private` target resolves
 disabled and the OpenTelemetry SDK never loads. The client reads the build's login issuer in one
-module-scope assignment that keeps it only for `official` or `test`, and the client id under the
-same kind test; that one value decides both whether the connection signs in and whether the Profile
-screen offers Sign In. With no issuer the connection runs with sign-in off: it builds no OIDC
-client, so every connection is anonymous and no OIDC request leaves it whatever its URL or storage
-holds. Toward `local` and `private` the one sign-in a browser page can make is for a world's ticket,
-only when the build names a ticket issuer, through an OIDC client built apart from the connection;
-its token goes to the account service's ticket route alone. A production document that omits `kind`
-resolves to `private`, so it gets neither account sign-in nor telemetry. The OTLP endpoint stays a
-build value; the run-time decision is only whether to use it. The control reads "Sign in / create
-account with <provider>", under the build's provider name or the issuer when the build names none,
-because registration happens at the provider (operator ruling,
+module-scope assignment that keeps it only for `official` or `test`, and hands the connection the
+client id under the same kind test; that one issuer value decides both whether the connection signs
+in and whether the Profile screen offers Sign In. With no issuer the connection runs with sign-in
+off: it builds no OIDC client, so every connection is anonymous and no OIDC request leaves it
+whatever its URL or storage holds. Toward `local` and `private` the one sign-in a browser page can
+make is for a world's ticket, only when the build names a ticket issuer, through an OIDC client
+built apart from the connection; its token goes to the account service's ticket route alone. A
+production document that omits `kind` resolves to `private`, so it gets neither account sign-in nor
+telemetry. The OTLP endpoint stays a build value; the run-time decision is only whether to use it.
+The control reads "Sign in / create account with <provider>", under the build's provider name or the
+issuer when the build names none, because registration happens at the provider (operator ruling,
 <https://github.com/mdrewt/monster-realm/issues/588>).
 
 **Why.** The same build joins worlds we do not operate (see "One game, three ways to play: no code
@@ -2104,16 +2104,16 @@ tests that hold both gates: `ARCHITECTURE.md` "Client", Connection and store, an
 ## The desktop shell keeps a single-player or friends world's reconnect token on the device; a browser keeps every target's per tab
 
 **Decision.** A page in a browser keeps the anonymous reconnect token per tab (`sessionStorage`) for
-every kind; only the desktop shell keeps a `local` or `private` world's token on the device (the
-origin's `localStorage`). The shell is known by the shell document's top-level `host: 'desktop'`,
-which the desktop shell writes and a browser page's document leaves out. The client uses exactly one
-area, never the other: a blocked area means an anonymous connect, not a fall back. A `local` or
-`private` target kept per tab first removes that one target's token key from `localStorage` (a token
-a page left there earlier) and nothing else. The key is derived from the target's `(uri, db)` in
-both areas, and the rule that withholds the token after two rejections since the last successful
-connect is the same in both (the token is withheld, never deleted). Only an anonymous build's token
-is saved; the account-kind marker, the guest-claim code and the OIDC flow stay in per-tab
-`sessionStorage` for every kind.
+every kind. The desktop shell keeps a `local` or `private` world's token on the device (the origin's
+`localStorage`), and every other kind's per tab. The shell is known by the shell document's
+top-level `host: 'desktop'`, which the desktop shell writes and a browser page's document leaves
+out. The client uses exactly one area, never the other: a blocked area means an anonymous connect,
+not a fall back. A `local` or `private` target kept per tab first removes that one target's token
+key from `localStorage` (a token a page left there earlier) and nothing else. The key is derived
+from the target's `(uri, db)` in both areas, and the rule that withholds the token after two
+rejections since the last successful connect is the same in both (the token is withheld, never
+deleted). Only an anonymous build's token is saved; the account-kind marker, the guest-claim code
+and the OIDC flow stay in per-tab `sessionStorage` for every kind.
 
 **Why.** A browser may be a shared or public computer, and a world finds the player's character again
 by their account (one character per account in a world; a check under a handle another identity holds
@@ -2133,13 +2133,14 @@ hold it: `ARCHITECTURE.md` "Client", Connection and store.
 
 **Decision.** The CI `e2e` job judges each shard by its highest attempt and lists every test that
 passed only on a rerun: `unexpected` on a lower attempt and `expected` on the highest. The list goes
-to the run's step summary, complete and on a failing run too, and to one annotation per test. The
-listing changes no verdict: a green highest attempt still passes the job. Playwright `retries` is
-unset, so a rerun of failed jobs is the only second attempt, and a report's `flaky` count stays a
-failure. `docs/e2e-flakes.md` registers the e2e flakes whose fix has not merged, each with its
-evidence, its verdict (product or test) and its next step. The change that fixes a flake deletes its
-entry. A test the listing names that has neither an entry nor a residual row of its own is a new
-flake and gets an entry. A flake that its own row holds may stay a row until a study takes it.
+to a table in the run's step summary, complete and on a failing run too, and to one annotation per
+test. The listing changes no verdict: a green highest attempt still passes the job. Playwright
+`retries` is unset, so a rerun of failed jobs is the only second attempt, and a report's `flaky`
+count stays a failure. `docs/e2e-flakes.md` registers the e2e flakes whose fix has not merged, each
+with its evidence, its verdict (product or test) and its next step. The change that fixes a flake
+deletes its entry. A test the listing names that has neither an entry nor a residual row of its own
+is a new flake and gets an entry. A flake that its own row holds may stay a row until a study takes
+it.
 
 **Why.** Before the listing, a test that failed and then passed on a rerun left no mark on the run.
 The only way to find one was to read the attempt-1 jobs of every rerun run by hand. Failing a run
@@ -2266,14 +2267,18 @@ not a credential. An identity reads its own row alone.
   answers to and stores the answer, a negative one included. An identity the access rule has not
   admitted cannot connect, so the world's owner relays its ticket; a per-minute budget bounds the
   redeems a world sends, and never refuses the relay.
-- **Later**, the world asks again about one identity at most once in 10 minutes, when it connects,
-  and about the host's own account, the identity the owner names, on an hourly tick that asks once a
-  day.
+- **Later**, the world asks again about one identity at most once in 10 minutes, when it connects:
+  arming the re-check stamps the row, so a client that reconnects in a loop cannot make it ask at
+  every connection. It asks about the host's own account, the identity the owner names and marks on
+  its row, on an hourly tick that asks once a day and again within the hour after a tick that got no
+  answer; that schedule row is replaced, never updated.
 - **The stored row admits** and entitles the connection the whole time a request waits, and a row
   never expires; a check that gets no answer changes no standing.
-- **The world learns its address** from the service's answers. A redeem presents an `ip:` name only
-  while no address is stored for its family or the stored one is the name's own and was confirmed
-  under 25 hours ago, and a move goes through one only while the stored one is.
+- **The world learns its address** from the service's answers: it asks over the address family of
+  its `ip:` names, and a redeem stores the address apart from the account, so a refused redeem still
+  stores it. A redeem presents an `ip:` name only while no address is stored for its family or the
+  stored one is the name's own and was confirmed under 25 hours ago, and a move goes through one
+  only while the stored one is.
 - **A transaction that stores an answer** reads again every row it decides on, so an older answer
   never overwrites a newer one. No log line, table or return value holds a ticket, and no log line
   or return value holds a handle.
@@ -2367,13 +2372,13 @@ clients, and the transaction that stores the answer moves the character to the i
 was redeemed for: every row that makes up the character and its position, with no marker, zeroed row
 or tombstone left at the source. The source's presence rows are deleted, and the destination's own
 join makes its character. A private row records the identity the character left; until that
-identity's next successful check deletes it, the join and the guest claim refuse it, so checking in
-again with the same account moves the character back. The move is refused with no write through an
-`ip:` name the world has not confirmed, for a caller that holds another account or owns a character,
-and, under one reason, while either identity is in an ongoing battle or a trade or the source's
-account is pending deletion. A move admits nobody, and leaves the source unadmitted where the rule
-was refusing it. Finished battles and the rows about the source's own connection, admission and
-login stay under the source.
+identity's next successful check deletes it, the join and the guest claim's completion refuse it, so
+checking in again with the same account moves the character back. The move is refused with no write
+through an `ip:` name the world has not confirmed, for a caller that holds another account or owns a
+character, and, under one reason, while either identity is in an ongoing battle or a trade or the
+source's account is pending deletion. A move admits nobody, and leaves the source unadmitted where
+the rule was refusing it. Finished battles and the rows about the source's own connection, admission
+and login stay under the source.
 
 **Why.** An account owns the game once, and a browser connects under a fresh identity at every
 session, so without a move a returning player would start over or hold one character per browser
@@ -2511,11 +2516,11 @@ and starting no session, then shows the server's address and asks for consent ev
 it derives the attestation's `aud` from the address the bind returns to, `dns:<host>:<port>/<db>` or
 `ip:<address>:<port>/<db>`, and redirects the browser to one fixed path at that address with a
 one-use code in the fragment; the page redeems the code, with a value it kept, for the attestation,
-and binds with it. The route takes only an `https:` origin that equals the post's `Origin` header: a
-domain under a public suffix, or a globally reachable IP address. Nothing is sent to the server
-before the player presses Continue or Cancel, and the address, database and nonce reach no database,
-log or backup. A page asks for a bind when the world says it needs one and once a day otherwise, a
-default the operator may overrule. Operator ruling,
+and binds with it. The route takes only the page's own origin, `https:`, equal to the post's
+`Origin` header: a domain under a public suffix, or a globally reachable IP address. Nothing is sent
+to the server before the player presses Continue or Cancel, and the address, database and nonce
+reach no database, log or backup. A page asks for a bind when the world says it needs one and once a
+day otherwise, a default the operator may overrule. Operator ruling,
 <https://github.com/mdrewt/monster-realm/issues/833>: a player at a public computer joins a friend's
 server from a browser by its address, a static IP address included. Designed, not built.
 
@@ -2551,15 +2556,16 @@ What the page posts, the route's checks, the measurements and the judge's scores
 production login issuer, holds no attestation key and names no account service to ask. The `world`
 build, which the desktop shell and the standalone server ship, holds the production attestation
 keys, names the production account service and trusts no login issuer. The lists and the address are
-constants of the build. No production attestation key is published and the production service's
-address is a placeholder under a reserved name that answers nothing, so a `world` build binds
-nothing and entitles nobody until a real address ships. On a build with no key the binding reducers
-refuse as their first statement, before anything is decoded, read or written (the unbind and the
-drop only on a build that also names no account service to ask), and no rule reads a binding on any
-build. On a build that names no account service each account-check procedure answers `this server
-checks no account` as its first statement and the entitlement check reads no `world_account` row, so
-the official build has the login token as its one way in. On the `world` build every token is an
-anonymous guest's. The two builds have one schema and one set of client bindings.
+constants of the build. No production attestation key is published, so a `world` build binds
+nothing; and the production service's address is a placeholder under a reserved name that answers
+nothing, so a `world` build entitles nobody until a real address ships. On a build with no key the
+binding reducers refuse as their first statement, before anything is decoded, read or written (the
+unbind and the drop only on a build that also names no account service to ask), and no rule reads a
+binding on any build. On a build that names no account service each account-check procedure answers
+`this server checks no account` as its first statement and the entitlement check reads no
+`world_account` row, so the official build has the login token as its one way in. On the `world`
+build every token is an anonymous guest's. The two builds have one schema and one set of client
+bindings.
 
 **Why.** A ticket and an attestation are the only account credentials a private host ever sees,
 and the same module source runs on every server, so the official server must be unable to take
@@ -2641,18 +2647,18 @@ identity holding an admission row. Under `Allowlist` it admits the owner; an ide
 `world_account` row exactly while that row's handle is on the host's private list, and nothing else
 counts for it, so delisting refuses at the next check; and an identity with no such row only when it
 holds an admission row. An attestation binding is not read. The list is read at every check and
-nothing is stored from it. When the rule changes to one that is not `Open`, the owner's rule change
-gives an admission row to each live identity that the rule in force before the call admitted, and to
-none that rule refused. Nothing else writes an admission row; one is deleted with its identity's
-`world_account` row by the player's own unbind and the owner's drop, and by the deletion cascade and
-a guest claim (for the retired guest). The list is the owner's to edit, at most 256 handles, and is
-made from the players already let in: a change to `Allowlist` adds the handle of every
-`world_account` row whose identity the rule in force admitted, the owner's own handle stays listed
-while the rule is `Allowlist`, a write that would take the list past its bound is refused, and an
-account's deletion takes off the handle of the deleted identity's `world_account` row. The module
-declares no HTTP handler, no HTTP route and no row filter. The module's half is built; the gate's
-half (the door endpoint and its password check, closing a removed identity's sockets) is designed,
-not built.
+nothing is stored from it. Admission rows are written only by the owner's rule change: to each
+identity the call names, and, when the rule changes to one that is not `Open`, to each live identity
+that the rule in force before the call admitted, and to none that rule refused. One is deleted with
+its identity's `world_account` row by the player's own unbind and the owner's drop, by the deletion
+cascade and a guest claim (for the retired guest), and by a character move, for a source the rule
+was not admitting. The list is the owner's to edit, at most 256 handles, and is made from the
+players already let in: a change to `Allowlist` adds the handle of every `world_account` row whose
+identity the rule in force admitted, the owner's own handle stays listed while the rule is
+`Allowlist`, a write that would take the list past its bound is refused, and an account's deletion
+takes off the handle of the deleted identity's `world_account` row. The module declares no HTTP
+handler, no HTTP route and no row filter. The module's half is built; the gate's half (the door
+endpoint and its password check, closing a removed identity's sockets) is designed, not built.
 
 **Why.** Measured at SpacetimeDB 2.11.0 (the WebSocket, `call`, `sql` and the MCP tools) and again
 at 2.16.1 (the WebSocket, `call`, `sql` and the MCP `sql` tool): every route that reads a row or
@@ -2712,8 +2718,8 @@ design: `docs/local-play.md` §3, fork (a).
 ## The gate checks a world's password; the module never receives one
 
 **Decision.** No reducer the module declares takes a password, a hash of one or a value derived from
-one. The owner-only rule change stores the rule and nothing else: the access table has no salt or
-hash column. A `Password` world admits the owner and the identities holding an admission row, and
+one. The owner-only rule change stores in the access table the rule and nothing else: it has no salt
+or hash column. A `Password` world admits the owner and the identities holding an admission row, and
 nothing else. The host gate checks the password: it keeps an Argon2id salt and hash in the world's
 directory with the owner credential's permissions, never in a backup copy's readable part or a log;
 it counts wrong passwords by source address and by identity and refuses both after five in ten
@@ -2883,11 +2889,11 @@ returns as meets the claim flow's own join veto.
 **Rules out.** A build variable that says the server enforces (see "A target's kind gates telemetry
 and account sign-in": the build must not know its server). Treating a `test` target with an issuer
 as enforcing, as an `official` one is (a `test` target that names an issuer may be open, as the
-browser suite's and the playtests' are). Clearing the stored claim code when the gate's sign-in
-starts. Lowering the gate when a connection is merely allowed to try: the refusal arrives after
-`onReady`, so that hides the screen the refusal should raise. Reporting the refusal through
-`onError`. A `test` target still sends one anonymous `join_game` per page load before its screen
-shows; removing that needs a public value from the module, which is a schema change.
+browser suite's is). Clearing the stored claim code when the gate's sign-in starts. Lowering the
+gate when a connection is merely allowed to try: the refusal arrives after `onReady`, so that hides
+the screen the refusal should raise. Reporting the refusal through `onError`. A `test` target still
+sends one anonymous `join_game` per page load before its screen shows; removing that needs a public
+value from the module, which is a schema change.
 
 The connection's flag and callbacks, the gate's model and screen, and the tests: `ARCHITECTURE.md`
 "Client", Connection and store.

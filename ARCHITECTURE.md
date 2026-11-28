@@ -668,11 +668,9 @@ same at every check, and not a credential.
   re-check leaves alone a row that was unbound, checked again or replaced meanwhile, so an older
   answer never overwrites a newer one. A refusal is logged once, outside any transaction. No log
   line, table or return value holds a ticket, and no log line or return value holds a handle.
-- **What reads the row.** `accounts::entitled` (`docs/DECISIONS.md`, "Ownership is enforced unless a
-  dev feature switches it off") and, under `Allowlist`, `access::is_admitted`, which admits an
-  identity that holds a row exactly while its handle is on the host's list (`docs/DECISIONS.md`, "A
-  world that is not open refuses an unadmitted identity at connect and in every reducer; the owner
-  relays the door").
+- **What reads the row.** `accounts::entitled` (The ownership gate, below) and, under `Allowlist`,
+  `access::is_admitted`, which admits an identity that holds a row exactly while its handle is on
+  the host's list (Access, below).
 - **Erasing it.** `unbind_world_account()` erases the caller's row with its armed re-check, and the
   owner's `drop_world_binding(identity)` does the same for a named identity. The unbind is the one
   reducer of the client roster the access rule does not gate, so a player whose handle the host took
@@ -698,8 +696,7 @@ same at every check, and not a credential.
   ID token in memory, and `main.ts` builds it only for a `local` or `private` target outside the
   desktop shell when `VITE_MR_WORLD_TICKET_ISSUER` is set. The gate is the menu frame's gate mode,
   the frame the sign-in gate of a server we operate uses (`worldGateStep`, `buildWorldGateView`).
-- **Which service.** `BuildProfile::world_check_url` (`docs/DECISIONS.md`, "The official build holds
-  no attestation key and a world build trusts no login issuer").
+- **Which service.** `BuildProfile::world_check_url` (Build profiles, below).
 - **What keeps the surface closed.** `findDefinitionViolations`
   (`scripts/verify-release-reducers.mjs`) refuses a module definition that declares any procedure
   but these four, or any schedule but the module's own, on the default build and on each release
@@ -717,13 +714,12 @@ The attestation binding is compiled beside it (`server-module/src/world_binding.
 `world_binding` and `world_bind_nonce`, their two views, the four nonce and bind reducers and the
 verifier). It records a binding that nothing reads: it entitles and admits nobody, and it is to be
 removed with `POST /attest`. A caller who is not entitled is refused by every reducer a player plays
-through (`docs/DECISIONS.md`, "Ownership is enforced unless a dev feature switches it off"). Proved
-by `server-module/src/account_checks_tests.rs` and, for the host's own check,
-`server-module/src/account_checks_host_tests.rs` on the native test host, with every answer of the
-service stubbed. That host runs a scheduled procedure as the scheduler would call it and runs no
-scheduler, so the hourly tick and a request to a check name are not measured on a published module.
-The measurements on 2.16.1, the four alternatives with a judge's scores and the slice changes are in
-`docs/refactors/account-checks.md`.
+through (The ownership gate, below). Proved by `server-module/src/account_checks_tests.rs` and, for
+the host's own check, `server-module/src/account_checks_host_tests.rs` on the native test host, with
+every answer of the service stubbed. That host runs a scheduled procedure as the scheduler would
+call it and runs no scheduler, so the hourly tick and a request to a check name are not measured on
+a published module. The measurements on 2.16.1, the four alternatives with a judge's scores and the
+slice changes are in `docs/refactors/account-checks.md`.
 
 **A character move.** When `check_account` or the owner's `check_account_for` is answered with a
 handle that another identity of the world holds, the two identities are one account at two clients,
@@ -823,27 +819,27 @@ not owner-only makes that admission check, except `unbind_world_account`, which 
 (`docs/DECISIONS.md`, "A private world checks an account itself: a one-use ticket at first contact,
 then the account's handle"). The five reducers an account reaches whatever it owns make it through
 `access::require_rule_admits`, the access rule alone; the others make it through
-`access::require_admitted`, which makes it and then the ownership check (`docs/DECISIONS.md`,
-"Ownership is enforced unless a dev feature switches it off", which names the five). The owner-only
-ones are `sync_content`, `set_world_access`, `set_world_names`, `set_world_allowlist`,
-`set_host_identity`, `drop_world_binding` and the two relayed binding reducers. The binding reducers
-answer their build's refusal before that check; it reads nothing. The procedure `check_account`
-makes the admission check before it sends anything and again before it stores an answer, and
-`check_account_for` the owner check. A world with no `world_access` row is `Open`. Under `Password`,
-`is_admitted` admits the owner and an identity in `world_admission`. Under `Allowlist` it admits the
-owner; an identity that holds a `world_account` row exactly while that row's handle is a row of
-private `world_allowlist` (at most 256 handles of 1 to 1024 visible ASCII, in the column named
-`account_subject`), and nothing else counts for it, so delisting refuses at the next check; and an
-identity with no such row only when it holds a `world_admission` row. An attestation binding is not
-read. The list is read at every check and nothing is stored from it. When the rule changes to one
-that is not `Open`, `set_world_access` gives an admission row to each live identity that the rule in
-force before the call admitted, and to none that rule refused. A new joiner's way in under
-`Allowlist` is the owner's relayed account check (`check_account_for`) and the listing of the handle
-it stored. Admission rows are written only by the owner-only reducer `set_world_access`, which takes
-the joiners' identities, and deleted by a player's own unbind and the owner's `drop_world_binding`
-when either erases a `world_account` row, and by the deletion cascade and a guest claim (for the
-retired guest). A retired guest identity that reconnects holds no world row: in a `Password` or
-`Allowlist` world it is refused until the owner admits it or relays a check for it.
+`access::require_admitted`, which makes it and then the ownership check (The ownership gate, below,
+names the five). The owner-only ones are `sync_content`, `set_world_access`, `set_world_names`,
+`set_world_allowlist`, `set_host_identity`, `drop_world_binding` and the two relayed binding
+reducers. The binding reducers answer their build's refusal before that check; it reads nothing. The
+procedure `check_account` makes the admission check before it sends anything and again before it
+stores an answer, and `check_account_for` the owner check. A world with no `world_access` row is
+`Open`. Under `Password`, `is_admitted` admits the owner and an identity in `world_admission`. Under
+`Allowlist` it admits the owner; an identity that holds a `world_account` row exactly while that
+row's handle is a row of private `world_allowlist` (at most 256 handles of 1 to 1024 visible ASCII,
+in the column named `account_subject`), and nothing else counts for it, so delisting refuses at the
+next check; and an identity with no such row only when it holds a `world_admission` row. An
+attestation binding is not read. The list is read at every check and nothing is stored from it. When
+the rule changes to one that is not `Open`, `set_world_access` gives an admission row to each live
+identity that the rule in force before the call admitted, and to none that rule refused. A new
+joiner's way in under `Allowlist` is the owner's relayed account check (`check_account_for`) and the
+listing of the handle it stored. Admission rows are written only by the owner-only reducer
+`set_world_access`, which takes the joiners' identities, and deleted by a player's own unbind and
+the owner's `drop_world_binding` when either erases a `world_account` row, by the deletion cascade
+and a guest claim (for the retired guest), and by a character move, for a source the rule was not
+admitting (A character move, above). A retired guest identity that reconnects holds no world row: in
+a `Password` or `Allowlist` world it is refused until the owner admits it or relays a check for it.
 
 The list is the owner's to edit (`set_world_allowlist` replaces it) and is made from the players
 already let in. When the rule changes to `Allowlist`, `set_world_access` adds the handle of every
@@ -879,8 +875,8 @@ on a `Password` world. Designed, not built: the gate's half (the door endpoint a
 check, closing a removed identity's sockets), in `docs/local-play.md` §3, fork (a); see
 `docs/DECISIONS.md`, "The gate checks a world's password; the module never receives one".
 
-**Reducer arguments.** `set_world_access(rule, admit)` is owner-only and stores the rule and nothing
-else: `world_access` has no salt or hash column. `mod reducer_arguments` in
+**Reducer arguments.** `set_world_access(rule, admit)` is owner-only and stores in `world_access`
+the rule and nothing else: the table has no salt or hash column. `mod reducer_arguments` in
 `server-module/src/privacy_enforcement_tests.rs` describes every reducer the build declares, the dev
 builds' listed by hand, and holds that no argument is named for a password and that the arguments
 carrying text are a reviewed roster.
@@ -905,8 +901,7 @@ and reducers that need no `player` row, such as `care`, `train`, `evolve`, `set_
 no world binding`) before the gate. 5 are the account's own and open with
 `access::require_rule_admits`, the access rule alone: `delete_account`, `cancel_account_deletion`,
 `request_data_export`, `start_guest_claim` and `complete_guest_claim`. 8 are owner-only and make
-their owner check and no ownership check (named in "A world that is not open refuses an unadmitted
-identity at connect and in every reducer; the owner relays the door"). `unbind_world_account` makes
+their owner check and no ownership check (named in Access, above). `unbind_world_account` makes
 neither the admission check nor the ownership check. The connect reducer and the four account-check
 procedures of `server-module/src/account_checks.rs` ask nothing about ownership: where a world
 checks accounts itself, an identity becomes entitled by connecting and checking its account in.
@@ -1333,9 +1328,9 @@ PKCE, `net/oidc.ts`) against the issuer in `VITE_MR_OIDC_ISSUER`. `main.ts` hand
 The Profile screen's Account section offers Sign In only when `connect` received an
 issuer, labelled with the build's `VITE_MR_OIDC_PROVIDER_NAME` (the issuer when the
 build names none); `signInOffer` in `ui/claimModel.ts` decides it from that one value.
-`main.ts` reads `VITE_MR_OIDC_ISSUER` in one module-scope assignment that keeps it only for
-`official` or `test`; any other kind holds the empty string. `VITE_MR_OIDC_CLIENT_ID` reaches
-`connect` under the same kind test. `connect` gets `signIn: 'oidc'` only when that issuer is
+`main.ts` reads `VITE_MR_OIDC_ISSUER` in that one module-scope assignment, and any other kind holds
+the empty string; `VITE_MR_OIDC_CLIENT_ID` also reaches the world-ticket client, which only a
+`local` or `private` target builds. `connect` gets `signIn: 'oidc'` only when that issuer is
 non-empty, `'off'` otherwise; with `'off'` it builds no OIDC client and `startSignIn` only reports
 `'sign-in-off'`. The control reads `claim.signInWithProvider`. The e2e build sets the server's
 placeholder issuer `https://auth.monster-realm.invalid/` and a provider name
