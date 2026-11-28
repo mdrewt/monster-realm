@@ -832,14 +832,15 @@ in the column named `account_subject`), and nothing else counts for it, so delis
 next check; and an identity with no such row only when it holds a `world_admission` row. An
 attestation binding is not read. The list is read at every check and nothing is stored from it. When
 the rule changes to one that is not `Open`, `set_world_access` gives an admission row to each live
-identity that the rule in force before the call admitted, and to none that rule refused. A new
-joiner's way in under `Allowlist` is the owner's relayed account check (`check_account_for`) and the
-listing of the handle it stored. Admission rows are written only by the owner-only reducer
-`set_world_access`, which takes the joiners' identities, and deleted by a player's own unbind and
-the owner's `drop_world_binding` when either erases a `world_account` row, by the deletion cascade
-and a guest claim (for the retired guest), and by a character move, for a source the rule was not
-admitting (A character move, above). A retired guest identity that reconnects holds no world row: in
-a `Password` or `Allowlist` world it is refused until the owner admits it or relays a check for it.
+identity other than the owner that the rule in force before the call admitted; a live identity that
+rule refused gets one only when the call names it. A new joiner's way in under `Allowlist` is the
+owner's relayed account check (`check_account_for`) and the listing of the handle it stored.
+Admission rows are written only by the owner-only reducer `set_world_access`, which takes the
+joiners' identities, and deleted by a player's own unbind and the owner's `drop_world_binding` when
+either erases a `world_account` row, by the deletion cascade and a guest claim (for the retired
+guest), and by a character move, for a source the rule was not admitting (A character move, above).
+A retired guest identity that reconnects holds no world row: in a `Password` or `Allowlist` world it
+is refused until the owner admits it or relays a check for it.
 
 The list is the owner's to edit (`set_world_allowlist` replaces it) and is made from the players
 already let in. When the rule changes to `Allowlist`, `set_world_access` adds the handle of every

@@ -1940,13 +1940,13 @@ contains the playtest database name fails.
 
 **Why.** The same client must join a single-player world the game starts, a friends server and the
 official server (see "One game, three ways to play: no code may assume we run the server"). A page
-global set by a classic script is read synchronously, so the fail-loud throw stays at module scope
-where no `try` in `main()` can swallow it, and learning the target takes no request of its own. The
+global set by a classic script is read synchronously, so the fail-loud throw stays at module scope where
+no `try` in `main()` can swallow it, and the unit suites that import `main.ts` issue no request. The
 `uri` rules exist because the SDK resolves its endpoint relative to the `uri` while the client keys
-credentials on the raw string: a spelling the URL parser rewrites (a query, a missing trailing
-slash, a `..` segment) would be keyed as one target and dialled as another. The omitted-`kind`
-default is the most restricted kind, so nothing keyed on the kind is granted by omission. The
-dev-database refusal is a guard by name against a released client writing into the dev loop's data.
+credentials on the raw string: a spelling the URL parser rewrites (a query, a missing trailing slash, a
+`..` segment) would be keyed as one target and dialled as another. The omitted-`kind` default is the
+most restricted kind, so nothing keyed on the kind is granted by omission. The dev-database refusal is
+a guard by name against a released client writing into the dev loop's data.
 
 **Rules out.** Reading `import.meta.env.VITE_STDB_*` (or any build-time server address) in client code;
 fetching the document at start-up (an asynchronous read moves the throw out of module scope); deriving
@@ -2271,15 +2271,15 @@ not a credential. An identity reads its own row alone.
   arming the re-check stamps the row, so a client that reconnects in a loop cannot make it ask at
   every connection. It asks about the host's own account, the identity the owner names and marks on
   its row, on an hourly tick that asks once a day and again within the hour after a tick that got no
-  answer, and sends nothing about an account pending deletion; that schedule row is replaced, never
-  updated.
+  answer; it sends nothing about an account pending deletion, and that schedule row is replaced,
+  never updated.
 - **The stored row admits** and entitles the connection the whole time a request waits, and a row
   never expires; a check that gets no answer changes no standing.
 - **The world learns its address** from the service's answers: it asks over the address family of
-  its `ip:` names, and a redeem stores the address apart from the account, so a redeem refused after
-  the service answers has still stored it. A redeem presents an `ip:` name only while no address is
-  stored for its family or the stored one is the name's own and was confirmed under 25 hours ago,
-  and a move goes through one only while the stored one is.
+  its `ip:` names, and a redeem stores the address a usable answer reports apart from the account,
+  so a redeem refused after that answer has still stored it. A redeem presents an `ip:` name only
+  while no address is stored for its family or the stored one is the name's own and was confirmed
+  under 25 hours ago, and a move goes through one only while the stored one is.
 - **A transaction that stores an answer** reads again every row it decides on, so an older answer
   never overwrites a newer one. No log line, table or return value holds a ticket, and no log line
   or return value holds a handle.
@@ -2650,8 +2650,8 @@ counts for it, so delisting refuses at the next check; and an identity with no s
 holds an admission row. An attestation binding is not read. The list is read at every check and
 nothing is stored from it. Admission rows are written only by the owner's rule change: to each
 identity the call names, and, when the rule changes to one that is not `Open`, to each live identity
-other than the owner that the rule in force before the call admitted (a live identity it refused
-gets none unless the call names it). One is deleted with its identity's `world_account` row by the
+other than the owner that the rule in force before the call admitted (one that rule refused gets
+none unless the call names it). One is deleted with its identity's `world_account` row by the
 player's own unbind and the owner's drop, by the deletion cascade and a guest claim (for the retired
 guest), and by a character move, for a source the rule was not admitting. The list is the owner's to
 edit, at most 256 handles, and is made from the players already let in: a change to `Allowlist` adds
