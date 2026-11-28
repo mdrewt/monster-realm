@@ -1,17 +1,18 @@
-// shell/battleFrame — the battle frame: the three views that can own it (the deploy panel of a
-// Deploying battle, the tactical shell of an Active one, the results panel of a Finished one), which
-// one shows, the outcome latch, the tactics memos and the server-time estimate the countdowns read.
-// `refreshBattle` decides the frame on each batch; the frame loop pumps the countdown and the PvP
-// clock (`pumpStillThere`, `pumpClock`) on the estimate `feedServerClock` feeds.
+// shell/battleFrame — the battle frame: the three views that can own it (the deploy panel of
+// a Deploying battle, the tactical shell of an Active one, the results panel of a Finished one),
+// which one shows, the outcome latch, the tactics memos and the server-time estimate the
+// countdowns read. `refreshBattle` decides the frame on each batch; the frame loop pumps the
+// countdown and the PvP clock (`pumpStillThere`, `pumpClock`) on the estimate `feedServerClock`
+// feeds.
 //
-// What the module reaches up into `main.ts` for comes through the battle port (`installBattlePort`):
-// the context stack as it stands, and the outcome edge it clears while the results wait for the
-// shell's playback. `main.ts` installs it once, at its own module scope, before it registers its
-// first listener; until then each member throws. `main()` mounts the element the views are built in
-// (`mountBattleFrame`), `resetPredictionState` resets the battle and tactics state
-// (`resetBattleFrame`), and `closeFrame` continues the outcome (`continueOutcome`). The views' handlers
-// run commands through the command port. The module registers no listener and writes nothing to
-// the document until a view is built.
+// What the module reaches up into `main.ts` for comes through the battle port
+// (`installBattlePort`): the context stack as it stands, and the outcome edge it clears while the
+// results wait for the shell's playback. `main.ts` installs it once, at its own module scope,
+// before it registers its first listener; until then each member throws. `main()` mounts the
+// element the views are built in (`mountBattleFrame`), `resetPredictionState` resets the battle
+// and tactics state (`resetBattleFrame`), and `closeFrame` continues the outcome
+// (`continueOutcome`). The views' handlers run commands through the command port. The module
+// registers no listener and writes nothing to the document until a view is built.
 
 // bt-12: the tactics rules port is bound from the whole pkg namespace, LAZILY (`tacticsRules()`): the
 // test mocks of this module carry only the names main.ts and shell/config.ts import by name, and `bindTacticsRules`
@@ -88,7 +89,8 @@ export function installBattlePort(next: BattlePort): void {
 // bt-12 (BT12.1-BT12.4): the deploy panel (a Deploying battle) and the results panel (a Finished one)
 // share the `battleView` frame and overlay id. Both are constructed LAZILY, on the first batch that
 // routes to them (the frame has ONE owner, so one `battle-title` root at a time), on the mount
-// `main()` hands `mountBattleFrame` (`battleMount`). bt-17: the 1v1 view is gone; no view is built at boot.
+// `main()` hands `mountBattleFrame` (`battleMount`). bt-17: the 1v1 view is gone; no view is built
+// at boot.
 export let deployPanel: DeployPanel | undefined;
 export let resultsPanel: ResultsPanel | undefined;
 // bt-12 B (BT12.1): the tactical shell owns the frame of an Active tactical battle; built lazily too.
@@ -212,7 +214,8 @@ export function resetBattleFrame(): void {
   serverClock.forgetWindows();
 }
 
-/** The terminal outcome continues (`closeFrame`'s battle arm): the latch, then every battle view hides. */
+/** The terminal outcome continues (`closeFrame`'s battle arm): the latch, then every battle view
+ *  hides. */
 export function continueOutcome(): void {
   dismissedBattleId = continuedBattleId(store.latestPlayerBattle(identity), dismissedBattleId);
   hideAllBattleViews();
@@ -720,9 +723,9 @@ export function pumpClock(serverNowMs: number): void {
   );
 }
 
-/** ts-6b-7.2: the shown battle's clock rows feed the server-time estimate (a batch listener `main.ts`
- *  registers after `refreshBattle`'s, which sets the shown battle, so a battle's first batch is already
- *  remembered). */
+/** The shown battle's clock rows feed the server-time estimate. `main.ts` registers this as a batch
+ *  listener after `refreshBattle`, which sets the shown battle, so a battle's first batch is already
+ *  remembered. */
 export function feedServerClock(): void {
   const shown = tacticsShown;
   if (shown !== null) serverClock.observeWindows(store.battleClocks(shown.battleId), Date.now());

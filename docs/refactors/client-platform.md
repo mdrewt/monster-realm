@@ -240,14 +240,14 @@ lines name 213 symbols, and 208 of them are declared in `main.ts`.
   leaves them out.
 - **42 declarations are named by no line and are not in "What `main.ts` keeps".** 41 of them
   have an owner: `shell/config.ts` holds four sign-in constants (`OPERATED_BY_US`, `OIDC_ISSUER`,
-  `SIGN_IN_MODE`, `ACCOUNT_REQUIRED`), `shell/notices.ts` holds `openedTradeSessions`, and
-  section 4 gives the rest one: `SIGN_IN_OFFER`; the trade editor (`pendingTradeOpen`,
+  `SIGN_IN_MODE`, `ACCOUNT_REQUIRED`), `shell/notices.ts` holds `openedTradeSessions`,
+  `shell/battleFrame.ts` holds the battle playback (`resultsAwaitDrain`, `serverClock`,
+  `feedTacticsShell`, `holdResultsForPlayback`), and section 4 gives the rest one: `SIGN_IN_OFFER`; the trade editor (`pendingTradeOpen`,
   `TRADE_OPEN_WAIT_MS`, `knownSessionIds`, `resetTradeSessionState`, `openTradeEditor`,
   `closeTradeEditor`, `tradeOpenExpired`); the sign-in gate (`signInGate`,
   `saidGateLine`, `signInGateView`, `showSignInGate`, `lowerSignInGate`, `applySignInGate`,
   `holdSignInGate`); the pad poll (`TerminalPhase`, `terminalPhase`, `padPhase`,
-  `pollTerminalPad`, `pollPad`, `pressEdges`, `settleControlsCapture`); the battle playback
-  (`resultsAwaitDrain`, `serverClock`, `feedTacticsShell`, `holdResultsForPlayback`); and `owed`,
+  `pollTerminalPad`, `pollPad`, `pressEdges`, `settleControlsCapture`); and `owed`,
   `lastRendered`, `worldRevealed`, `zoneWarpsById`, `zoneWarps`, `worldIsBare`, `ownNameModel`,
   `evolutionNoticeOk`, `MrSessionOffer`, `mrSessionOffer`. `protocolMismatchLine` stays in
   `main.ts` beside the `connect` callback that calls it.
@@ -260,8 +260,9 @@ lines name 213 symbols, and 208 of them are declared in `main.ts`.
   `closeTradeEditor` (screens) calls `dispatch`. `commands.ts` sits above all three in the map
   and imports them. Their callers reach `dispatch` and `applyStack` through the command port
   (2.2). The battle port serves `battleFrame.ts` alone.
-- **One lower module writes a higher one's bindings.** `holdResultsForPlayback` (battle frame)
-  assigns `outcomeShownAtMs` and `autoContinuedAtMs`, which `frames.ts` owns.
+- **One lower module writes a higher one's bindings.** `holdResultsForPlayback`
+  (`shell/battleFrame.ts`) clears `outcomeShownAtMs` and `autoContinuedAtMs`, which `frames.ts`
+  owns, through the battle port (2.2).
 
 ### 2.2 The command port
 
@@ -269,12 +270,14 @@ lines name 213 symbols, and 208 of them are declared in `main.ts`.
 port: `client/src/shell/commandPort.ts`, a module that imports no shell module and holds a typed
 object with those two members, installed once by `main.ts` before its first listener registers
 and throwing until then, as the hint host does. `battleFrame.ts`, `screens.ts`, `menu.ts` and
-`interact.ts` call it. The battle port keeps what only the battle frame needs from the stack:
-the read of `contextStack` in `popOverBattleBeforeSwitch` and `buildResultsPanel`, and a function
-that clears the outcome edge for `holdResultsForPlayback`. The command port's eight callers
-(`buildDeployPanel`, `buildResultsPanel`, `tacticsShellDeps`, `runInteract`, `applyMenuStep`,
-`closeTradeEditor`, `popOverBattleBeforeSwitch` and `showSignInGate`) call it from `main.ts`, so
-moving them into those four modules changes no call to `dispatch` or `applyStack`.
+`interact.ts` call it. The battle port (`installBattlePort`, `shell/battleFrame.ts`) carries what
+only the battle frame needs from the stack: the read of `contextStack` in
+`popOverBattleBeforeSwitch` and `buildResultsPanel`, and a function that clears the outcome edge
+for `holdResultsForPlayback`. Of the command port's eight callers, `buildDeployPanel`,
+`buildResultsPanel`, `tacticsShellDeps` and `popOverBattleBeforeSwitch` call it from
+`shell/battleFrame.ts`, and `runInteract`, `applyMenuStep`, `closeTradeEditor` and
+`showSignInGate` from `main.ts`, so moving those four into their modules changes no call to
+`dispatch` or `applyStack`.
 
 ### 2.3 Disposition of extractions 7 to 18
 
@@ -287,7 +290,7 @@ built, the symbols it holds. None is superseded and none is dropped.
 | Extraction | Module | Disposition | Section 4 |
 |---|---|---|---|
 | 7 | `shell/notices.ts` | kept; takes `openedTradeSessions` as well | none: built |
-| 8 | `shell/battleFrame.ts` | kept; takes the battle playback symbols; its port carries the stack reads and the outcome edge, and the command port the rest | 5 |
+| 8 | `shell/battleFrame.ts` | kept; takes the battle playback symbols; its port carries the stack reads and the outcome edge, and the command port the rest | none: built |
 | 9 | `shell/frames.ts` | kept; takes `worldIsBare` | 6 |
 | 10 | `shell/movement.ts` | kept; takes `owed`, `lastRendered`, `worldRevealed`, `zoneWarpsById`, `zoneWarps` | 7 |
 | 11 | `shell/account.ts` | kept; takes `SIGN_IN_OFFER`, `ownNameModel` and the Name repaint; its export download calls `saveFile` | 8 |
@@ -362,7 +365,6 @@ fixed in the slice. The slice for a row deletes that row. The symbol lists are m
 
 | # | Module | Kind | Tier | Creates | Covering tests | Feature change |
 |---|---|---|---|---|---|---|
-| 5 | battle frame | interface | hard | `client/src/shell/battleFrame.ts` | `client/src/main.dispatch.test.ts`, `client/src/main.battle-reseed.test.ts`, `client/src/tactics/tacticsBattle.test.ts`, `client/src/tactics/deployPanel.test.ts`, `client/src/tactics/results.test.ts` | none added, none removed |
 | 6 | frames | interface | hard | `client/src/shell/frames.ts` | `client/src/main.dispatch.test.ts`, `client/src/main.reconnectStack.test.ts`, `client/src/main.a11yFocus.test.ts` | none added, none removed |
 | 7 | movement | interface | hard | `client/src/shell/movement.ts` | `client/src/main.input.test.ts`, `client/src/main.zoneCue.test.ts`, `client/src/main.worldReveal.test.ts`, `client/src/net/switchZoneAtomicity.test.ts` | none added, none removed |
 | 8 | account | interface | hard | `client/src/shell/account.ts` | `client/src/main.claimCode.test.ts`, `client/src/main.signInGate.test.ts`, `client/src/main.privacyWiring.test.ts`, `client/src/main.privacyCountdown.test.ts`, `client/src/main.exportTransport.test.ts` | none added, none removed |
@@ -388,22 +390,9 @@ What each row takes. **The shell set** is the `touches:` every row that moves co
 `client/src/ui/i18n/catalogParity.test.ts`, whose roster of files that import the catalog
 resolver gains the module when it resolves a string; this file;
 `docs/refactors/client-shell.md`; and `ARCHITECTURE.md`. A row names what it touches beside that
-set. A row that moves boot wiring or a DEV hook (5, 14, 15) runs the full end-to-end suite as
+set. A row that moves boot wiring or a DEV hook (14, 15) runs the full end-to-end suite as
 well.
 
-5. `client/src/shell/battleFrame.ts` takes `battleViews`, `battleFrameShown`,
-   `hideAllBattleViews`, `activeBattleView`, `tacticalOwnsStart`, `battleHint`, `tacticsRules`,
-   `tuningOf`, `refreshBattle`, `popOverBattleBeforeSwitch`, `ownMonsterName`, `tacticsMapFacts`,
-   `mapFactsOf`, `mySideOf`, `buildDeployPanel`, `noteRatingBaseline`, `ratingLineFor`,
-   `buildResultsPanel`, `refreshTacticsShell`, `tacticsVMEqual`, `buildTacticsVM`,
-   `tacticsShellDeps`, `pumpStillThere`, `pumpClock`, `tradedIds`, `ownDeployLocked`,
-   `deployPanel`, `resultsPanel`, `tacticsBattle`, `battleMount`, `tacticsRulesPort`,
-   `tacticsTuning`, `tacticsShown`, `tacticsRating`, `tacticsIngested`, `lastTacticsVM`,
-   `stillThereAnnouncedFor`, `dismissedBattleId`, `battleSynced`, `unrenderableReported`,
-   `resultsAwaitDrain`, `serverClock`, `feedTacticsShell` and `holdResultsForPlayback`. It also
-   takes the body of the listener that feeds `serverClock`. Interface: the battle port (the stack
-   reads and the outcome edge), the `battleMount` mount, the lines `resetPredictionState` resets
-   (`resultsAwaitDrain` and `serverClock` among them) and the latch `closeFrame` writes.
 6. `client/src/shell/frames.ts` takes `overlayProbes`, `overlayHandles`, `screenViews`,
    `FrameOpen`, `frameOpens`, `frameOpenOf`, `screenHost`, `overlayVerdict`, `shownOverlays`,
    `contextStack`, `runStackCommands`, `outcomeShownAtMs`, `autoContinuedAtMs`, `syncStack`,
@@ -515,8 +504,9 @@ well.
 22. `client/src/tactics/storeMap.ts` is created and takes `shellKind`, `activeUnitOf`,
     `statusTagOf`, `intentKind`, `overlaySets` and `unitRowOf` from `client/src/tactics/wasm.ts`,
     with `copyTiles`, the private helper only `overlaySets` calls. Their importers are re-pointed:
-    `client/src/main.ts` (`shellKind`, `activeUnitOf`, `statusTagOf`; after rows 5 and 15 those
-    imports sit in `client/src/shell/battleFrame.ts` and `client/src/shell/devHooks.ts`),
+    `client/src/shell/battleFrame.ts` (`shellKind`, `activeUnitOf`, `statusTagOf`),
+    `client/src/main.ts` (`activeUnitOf`, for the DEV tactics hook; after row 15 that import sits in
+    `client/src/shell/devHooks.ts`),
     `client/src/net/rowConvert.ts` (`unitRowOf`), `client/src/tactics/tacticsBattle.ts`
     (`overlaySets`), `client/src/tactics/wasm.test.ts` and `client/src/net/rowConvert.test.ts`.
     Touches: those files and the two it moves between.

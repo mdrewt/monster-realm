@@ -591,8 +591,8 @@ function resetTradeSessionState(): void {
 // thunk of its own key, because main.ts is coverage-excluded and a copy-pasted sibling thunk
 // (`battleView: () => dialogueView?.visible ?? false`) type-checks perfectly while reading,
 // hiding or lending the wrong overlay; the battle rows (bt-12) go through the ONE set of
-// battle-frame helpers `shell/battleFrame.ts` exports, since three views can own that frame. Typed total over
-// `MirroredId`, so a dropped row is a COMPILE error.
+// battle-frame helpers `shell/battleFrame.ts` exports, since three views can own that frame.
+// Typed total over `MirroredId`, so a dropped row is a COMPILE error.
 
 // the probe table: whether each mirrored overlay is shown.
 const overlayProbes: Readonly<Record<MirroredId, () => boolean>> = {
