@@ -17,6 +17,8 @@ lint:
     cargo fmt --all --check
     cargo clippy --workspace --all-targets --all-features -- -D warnings
     client/node_modules/.bin/biome check .
+    # e2e flake ratchet: no new fixed waits or hard-coded host:port literals in client/e2e.
+    node scripts/e2e-lint.mjs
 
 typecheck:
     cargo check --workspace --all-targets
@@ -67,7 +69,7 @@ test:
     }
     shopt -s nullglob
     door "ops node suites" 7 141 ops/observability/relay/*.test.mjs ops/observability/checks/stack-config-checks.test.mjs
-    door "scripts node suites" 6 30 scripts/*.test.mjs
+    door "scripts node suites" 7 43 scripts/*.test.mjs
     door "justfile node suite" 1 47 justfile.test.mjs
     guard() {
         local hook=$1 ok=$2 floor=$3 out n

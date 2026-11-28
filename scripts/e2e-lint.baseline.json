@@ -1,0 +1,30 @@
+{
+  "wait": {
+    "client/e2e/controls.spec.ts": 6,
+    "client/e2e/dialogue.spec.ts": 1,
+    "client/e2e/golden.spec.ts": 1,
+    "client/e2e/identity-handles.spec.ts": 1,
+    "client/e2e/monster-privacy.spec.ts": 1,
+    "client/e2e/movement-input.spec.ts": 17,
+    "client/e2e/pad.ts": 1,
+    "client/e2e/pointer.spec.ts": 1,
+    "client/e2e/ranked-forfeit.spec.ts": 1,
+    "client/e2e/reduced-motion.spec.ts": 1,
+    "client/e2e/remote-walk.spec.ts": 2,
+    "client/e2e/render-context.spec.ts": 1,
+    "client/e2e/signin-gate.spec.ts": 5,
+    "client/e2e/tactics-pvp.spec.ts": 3,
+    "client/e2e/tap-to-turn.spec.ts": 3,
+    "client/e2e/trade-interlock.spec.ts": 2,
+    "client/e2e/trade-zz-negative.spec.ts": 2,
+    "client/e2e/ui-profile.spec.ts": 1,
+    "client/e2e/wallet-balance.spec.ts": 1,
+    "client/e2e/world-art.spec.ts": 6,
+    "client/e2e/zoneSync.spec.ts": 2
+  },
+  "port": {
+    "client/e2e/local-identity.spec.ts": 1,
+    "client/e2e/shell-config.spec.ts": 1,
+    "client/e2e/signin-gate.spec.ts": 2
+  }
+}
