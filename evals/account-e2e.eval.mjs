@@ -2759,7 +2759,8 @@ async function runOwnershipPhase({ repoRoot, tmp, targetDir, wasm, dbUrl, stub }
   if (!refusals.ok) throw new Error(refusals.reason);
   // Every profile read throws on a mismatch, so reaching here means each of the
   // four artefacts (test, dev-enforcing, official, no-feature) carried its own
-  // profile: the acs-6 tokens name the first three, the no-feature token the fourth.
+  // profile: the tokens formatAcs6Tokens renders (names beginning ACS6-) name the first
+  // three, and the no-feature token (NO-FEATURE-BUILD-VERIFIED(...)) names the fourth.
   return formatAcs6Tokens(parsed, line.sha256, refusals.detail, true) + ' ' + noFeatureToken;
 }
 
