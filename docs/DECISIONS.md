@@ -1389,7 +1389,7 @@ The logger, the heartbeat and the stack's parts: `ARCHITECTURE.md` "Observabilit
 the D-pad, A, B, X, Y, LB, RB, Start and Select. Letter keys are optional accelerators that open a
 canonical menu path. Every screen is a frame on one pure context stack over a world or battle base:
 B pops one frame, and Start pops every frame to the base, or opens the main menu at a base. Every
-frame draws inside the game screen with the shared frame chrome. Server-owned state (battles and
+frame is a class-styled frame inside the game screen. Server-owned state (battles and
 dialogue) is reconciled into the stack on every batch, never pushed by a keypress, and the client
 never closes a server-owned frame itself: it sends the reducer. A trade or challenge request is a
 non-modal banner and world sheet, never a frame. Which overlay may open over another is one tier
@@ -1403,8 +1403,8 @@ confirm step acts only once released and pressed again. Escape is routed ahead o
 view can trap it; text-entry views shield their fields from the other keys' accelerators. Each view
 keeps its state in a pure model with a thin DOM view. A status condition is named by text, never by
 colour alone. All UI strings come from a total typed catalog (`en` and `fr`) whose lookup throws on
-a missing key or an unregistered locale. One whole-tree scan holds that no client file writes a raw
-string to a text sink; each view's own runtime tests hold its behaviour.
+a missing key or an unregistered locale. One whole-tree scan holds that no non-test client file writes a
+raw string to a text sink; each view's own runtime tests hold its behaviour.
 
 **Why.** A handheld-console grammar, where a few contextual buttons are primary and hotkeys are
 shortcuts, is the intended interface. One stack makes "back one level" and "exit everything"
