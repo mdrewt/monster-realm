@@ -2527,16 +2527,6 @@ async function hostMintedToken(dbUrl) {
   return reply.token;
 }
 
-// The enforcing side, on the same host before the driver starts: a dev-enforcing
-// build of the patched copy refuses an anonymous caller, a stub token without the
-// claim and one naming another entitlement, and admits the entitled stub token;
-// then the official artefact `just release-module official` builds is read back,
-// hashed and published, and refuses the anonymous and the entitled stub token
-// alike; then a build of the patched copy that names no cargo feature carries
-// the `default` profile (enforcing, no dev reducers, no login issuer) and, on a
-// database of its own, refuses the anonymous and the entitled stub token at the
-// join and refuses a bind nonce because it holds no attestation key. Returns the
-// ownership tokens the pass detail begins with, then the no-feature token.
 // Reads the profile section of the wasm a build just wrote and requires it to
 // describe that build, so the section follows the features each build was made
 // with rather than one fixed profile. Throws `[acs6/profile] <label>: …`.
@@ -2559,6 +2549,16 @@ function requireArtefactProfile(repoRoot, wasmPath, label, want) {
   return section;
 }
 
+// The enforcing side, on the same host before the driver starts: a dev-enforcing
+// build of the patched copy refuses an anonymous caller, a stub token without the
+// claim and one naming another entitlement, and admits the entitled stub token;
+// then the official artefact `just release-module official` builds is read back,
+// hashed and published, and refuses the anonymous and the entitled stub token
+// alike; then a build of the patched copy that names no cargo feature carries
+// the `default` profile (enforcing, no dev reducers, no login issuer) and, on a
+// database of its own, refuses the anonymous and the entitled stub token at the
+// join and refuses a bind nonce because it holds no attestation key. Returns the
+// ownership tokens the pass detail begins with, then the no-feature token.
 async function runOwnershipPhase({ repoRoot, tmp, targetDir, wasm, dbUrl, stub }) {
   // a. The dev-enforcing build overwrites the wasm the first publish used.
   const enforcingBuild = run(
@@ -2757,8 +2757,9 @@ async function runOwnershipPhase({ repoRoot, tmp, targetDir, wasm, dbUrl, stub }
     official,
   });
   if (!refusals.ok) throw new Error(refusals.reason);
-  // The test and dev-enforcing reads threw on any mismatch, so reaching here
-  // means all three artefacts carried their own profile.
+  // Every profile read throws on a mismatch, so reaching here means each of the
+  // four artefacts (test, dev-enforcing, official, no-feature) carried its own
+  // profile: the acs-6 tokens name the first three, the no-feature token the fourth.
   return formatAcs6Tokens(parsed, line.sha256, refusals.detail, true) + ' ' + noFeatureToken;
 }
 

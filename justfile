@@ -460,8 +460,9 @@ mutate-core shard="":
 # Mutate only the code COMMITTED since `base` (uncommitted edits are not seen); `base...HEAD`
 # diffs from the merge base. `package` empty = game-core and server-module, the local pre-push
 # check; `monster-realm-module` alone is the server's zero-tolerance gate, which CI runs on every
-# pull request. A crate whose diff is empty is skipped without building. Same exit triage as
-# mutate-core (0 ok, 2 missed, 3 timeouts).
+# pull request. A crate whose diff is empty is skipped without building. cargo-mutants' exit code is
+# read as in mutate-core (0, 2 and 3 are verdicts; anything else fails with that code); a missed
+# mutant exits 1, and timeouts with none missed exit 0.
 #
 # Each crate is its own cargo-mutants run over its own diff, so a mutant is tested by its own
 # crate's tests. The module's run names `open_join`, because its tests join anonymously; cargo

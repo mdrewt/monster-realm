@@ -75,8 +75,8 @@ jobs:
         with: { wasm: true }
       # The account-e2e driver resolves the SDK from client/node_modules.
       - run: just setup
-      # Reads the default build's definition with the standalone host the tools step installs;
-      # bindings-drift's `spacetime generate` below reuses the same build.
+      # Reads the definition of the build that names no feature with the standalone host the tools
+      # step installs; bindings-drift's `spacetime generate` below reuses the same build.
       - run: just module-definition
       # With `CI` set, the bindings-drift and account-e2e evals fail without the spacetime CLI
       # (the tools step above installs it): they run a real `spacetime generate` and a live host.

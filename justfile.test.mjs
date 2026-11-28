@@ -896,7 +896,7 @@ for (const profile of ['official', 'world']) {
 
 // --- `just module-definition`: the default build's module definition, read the same way.
 
-// The module alone with its default features, as `spacetime build` builds it, from the committed
+// The module alone with no feature named (the manifest's `default` is empty), from the committed
 // lock file, into `targetRoot`.
 const defaultBuildArgs = (targetRoot) => [
   'build',
@@ -910,9 +910,10 @@ const defaultBuildArgs = (targetRoot) => [
   targetRoot,
 ];
 
-// A default build's artefact: its profile is no release profile.
+// The artefact of the build that names no feature: the `default` profile, which enforces
+// ownership and is no release profile.
 const DEFAULT_BUILD = wasmOf(
-  profileSection('profile=test\nenforces_ownership=false\ndev_reducers=false\n'),
+  profileSection('profile=default\nenforces_ownership=true\ndev_reducers=false\n'),
 );
 
 // The default build's artefact under the run's target root.
