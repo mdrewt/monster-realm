@@ -34,8 +34,7 @@
 //! no check. The connect reducer and the account-check procedures ask nothing about ownership:
 //! an identity becomes entitled by connecting and checking its account in. The check reads what
 //! is stored when the call runs, the connection's token and the caller's `world_account` row,
-//! so an identity that has joined is refused from the first call that finds it not entitled. A
-//! build that does not enforce ownership passes every admitted caller and reads neither.
+//! so an identity that has joined is refused from the first call that finds it not entitled.
 //!
 //! An identity that is not admitted can call nothing but that unbind, so admission is granted
 //! by calls only the owner can make: [`set_world_access`] sets the rule and admits identities
@@ -154,8 +153,8 @@ fn require_admitted_under(
 
 /// The access rule alone: refuses an identity the rule does not admit with
 /// [`REJECT_NOT_ADMITTED`] and asks nothing about ownership, on every build. The first
-/// statement of the five reducers an account reaches whatever it owns: its deletion and the
-/// cancel, its export, and the two halves of a guest claim.
+/// statement of the five reducers an account reaches whatever it owns (the module comment
+/// names them).
 pub(crate) fn require_rule_admits(ctx: &ReducerContext, reducer: &str) -> Result<(), String> {
     if is_admitted(ctx, ctx.sender()) {
         return Ok(());
