@@ -64,12 +64,12 @@ lockstep hop until the SDK ages.
    # keys: a fresh data dir has none; point at the dev keys explicitly
    <old-bin>/spacetimedb-standalone start --data-dir "$ISO" --listen-addr 127.0.0.1:3111 \
      --jwt-pub-key-path ~/.config/spacetime/id_ecdsa.pub --jwt-priv-key-path ~/.config/spacetime/id_ecdsa &
-   (cd ../mr-old && spacetime publish -s http://127.0.0.1:3111 --module-path server-module -y mr-upgrade-check)
+   (cd ../mr-old && spacetime publish -s http://127.0.0.1:3111 --module-path server-module --build-options="--features open_join" -y mr-upgrade-check)
    spacetime call -s http://127.0.0.1:3111 mr-upgrade-check sync_content   # seed data
    kill <old host pid>                                       # STOP before the new host
    <new-bin>/spacetimedb-standalone start --data-dir "$ISO" ... &          # same dir: proves the data-dir upgrade
    spacetime version use <new-version>
-   spacetime publish -s http://127.0.0.1:3111 --module-path server-module -y mr-upgrade-check
+   spacetime publish -s http://127.0.0.1:3111 --module-path server-module --build-options="--features open_join" -y mr-upgrade-check
    # assert seeded rows survived, then tear down
    git worktree remove ../mr-old
    ```
@@ -79,7 +79,10 @@ lockstep hop until the SDK ages.
    database will need `--delete-data` (which wipes it) or a hand-written migration.
    Then run `MR_SMOKE_DB=mr-upgrade-smoke just smoke-republish`: it publishes, edits
    content, republishes without `--delete-data`, and checks that player data survives
-   and the new content version is served.
+   and the new content version is served. It is also the check that the new CLI still hands a
+   feature to cargo: every publish in it passes `--build-options="--features open_join"` and the
+   script then joins anonymously, which a build without the feature refuses with `ownership
+   required`.
 7. **Check the playtest tooling.** `just playtest-up` against a scratch
    `MR_PLAYTEST_DB` exercises `spacetime describe --json`, which
    `scripts/verify-release-reducers.mjs` parses. It accepts both the older flat
@@ -168,7 +171,8 @@ patched where they refuse a native host"). At each hop, with `VER` the new versi
 5. **Pin and check.** Set the `spacetimedb` entry's `version = "=$VER"` in the root `Cargo.toml`, run
    `cargo update -p spacetimedb --precise $VER` (it accepts the path package; the other
    `spacetimedb-*` crates follow the copies' own `=$VER` requirements), then
-   `cargo nextest run -p monster-realm-module`.
+   `cargo nextest run -p monster-realm-module --features open_join` (the module's tests join
+   anonymously, and a build that names no feature admits nobody).
    The guard test `nh_vendored_crates_are_the_crates_io_release_plus_the_patch` checks the
    copies, the manifest, the patch's shape and the `[patch.crates-io]` table; the vendor's native
    stubs fail the test link if the patch is missing.
@@ -241,6 +245,8 @@ eval fails against the new CLI on PATH.
   for them (measured on 2.11.0). The client rebuilds each owner view whose rows changed from the
   SDK cache before the batch flushes (`client/src/net/viewReconcile.ts`); the e2e suite, which
   depends on that rebuild, passes on 2.16.1.
-- `spacetime publish` has no visible feature flag in `--help` (2.16.1). The e2e job builds the
-  `dev_reducers` wasm with `cargo build ... --features dev_reducers` and publishes it
-  with `--bin-path` (`client/e2e/global-setup.ts`).
+- A feature reaches cargo through the CLI two ways (measured on 2.16.1): `spacetime build
+  --features <f>`, a flag `--help` does not show, and `--build-options="--features <f>"` on
+  `spacetime publish` and `spacetime generate`. The recipes that publish for anonymous play pass
+  `open_join` that way. The e2e job builds the `dev_reducers` wasm with `cargo build ... --features
+  dev_reducers` and publishes it with `--bin-path` (`client/e2e/global-setup.ts`).

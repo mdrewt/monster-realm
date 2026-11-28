@@ -94,9 +94,17 @@ function runPublish({ publishExit = 0, callExit = 0 } = {}) {
 }
 
 // The whole argument list, exactly: the database named, the data kept (no `-c` /
-// `--delete-data` in any spelling), the CLI's default server and identity.
+// `--delete-data` in any spelling), the CLI's default server and identity, and the build told to
+// enable `open_join`: the module the dev loop publishes admits players with no account only
+// because the publish names that feature.
 function assertPublishOf(args) {
-  assert.deepEqual(args, ['publish', '--module-path', 'server-module', DB]);
+  assert.deepEqual(args, [
+    'publish',
+    '--module-path',
+    'server-module',
+    '--build-options=--features open_join',
+    DB,
+  ]);
 }
 
 test('after a publish that succeeds, just publish calls sync_content on the same database as the publishing identity', () => {
@@ -888,7 +896,7 @@ for (const profile of ['official', 'world']) {
 
 // --- `just module-definition`: the default build's module definition, read the same way.
 
-// The module alone with its default features, as `spacetime build` builds it, from the committed
+// The module alone with no feature named (the manifest's `default` is empty), from the committed
 // lock file, into `targetRoot`.
 const defaultBuildArgs = (targetRoot) => [
   'build',
@@ -902,9 +910,10 @@ const defaultBuildArgs = (targetRoot) => [
   targetRoot,
 ];
 
-// A default build's artefact: its profile is no release profile.
+// The artefact of the build that names no feature: the `default` profile, which enforces
+// ownership and is no release profile.
 const DEFAULT_BUILD = wasmOf(
-  profileSection('profile=test\nenforces_ownership=false\ndev_reducers=false\n'),
+  profileSection('profile=default\nenforces_ownership=true\ndev_reducers=false\n'),
 );
 
 // The default build's artefact under the run's target root.

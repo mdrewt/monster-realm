@@ -71,7 +71,8 @@ spacetime start --listen-addr 127.0.0.1:3000  # in another terminal; leave it ru
 just playtest-up                              # publish, seed, verify, build, serve
 ```
 
-`just playtest-up` publishes the release module to the database
+`just playtest-up` publishes the playtest module (the `open_join` build, which admits anonymous
+players and holds no dev reducer) to the database
 `monster-realm-playtest`, seeds content, checks that the published module has no dev
 reducers and that the client bundle has no debug hooks, builds the production client
 (its `shell-config.js` names the playtest database), and serves it with `vite preview` (it
@@ -90,15 +91,20 @@ There are two separate local setups; do not mix them up:
 |          | Dev loop                                                                        | Playtest                                                   |
 | -------- | ------------------------------------------------------------------------------- | ---------------------------------------------------------- |
 | Database | `monster-realm`                                                                 | `monster-realm-playtest` (`MR_PLAYTEST_DB`)                |
-| Module   | whatever you publish (a `dev_reducers` build belongs here, never in a playtest) | default release build, verified to have no dev reducers    |
+| Module   | whatever you publish (a `dev_reducers` build belongs here, never in a playtest) | the `open_join` build, verified to have no dev reducers    |
 | Client   | `npm run dev`, http://localhost:5290                                            | production build via `vite preview`, http://localhost:4173 |
 | Commands | below                                                                           | `just playtest-up` / `playtest-down` / `playtest-wipe`     |
 
 ```sh
 spacetime start --listen-addr 127.0.0.1:3000   # local server
-spacetime publish -s local --module-path server-module -y monster-realm
+spacetime publish -s local --module-path server-module --build-options="--features open_join" -y monster-realm
 cd client && npm run dev                        # Vite dev server on http://localhost:5290
 ```
+
+`--build-options="--features open_join"` builds the module for anonymous play. A publish that
+names no feature builds a module that enforces game ownership and trusts no login issuer, so it
+refuses every join with `ownership required`. `just publish` and `just build` name the feature
+themselves.
 
 The dev server serves `/shell-config.js`, which names `ws://127.0.0.1:3000` and database
 `monster-realm` unless `VITE_STDB_URI`/`VITE_STDB_DB` say otherwise; the client reads it
@@ -164,8 +170,8 @@ Vite plugin are in `ARCHITECTURE.md`, "Connection and store".
 
 Both recipes need a running SpacetimeDB; `STDB_SERVER` (default: the CLI nickname `local`) and
 `VITE_STDB_URI` say where. `just e2e` runs the suite serially in one database and publishes
-the module without `dev_reducers` unless `MR_DEV_MODULE_WASM` points at a build that has the
-feature. `just e2e-shards` is the fast full run: it builds that module once, then starts
+the `open_join` module, without `dev_reducers`, unless `MR_DEV_MODULE_WASM` points at a build that
+has that feature. `just e2e-shards` is the fast full run: it builds that module once, then starts
 `MR_E2E_SHARDS` Playwright processes, shard `i` in database `<VITE_STDB_DB>-shard-<i>` on vite
 port `MR_E2E_PORT + i`. It prints one line per shard with its log path and exits non-zero if
 any shard failed.

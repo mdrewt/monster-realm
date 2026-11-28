@@ -73,8 +73,8 @@
 # 8. dev-only code (`#[cfg(feature = "dev_reducers")]`, or `load_test_zones`, which implies it):
 #    grant_bait (taming.rs, `==`->`!=`), dev_expire_tactical_window (dev_clock.rs: every
 #    operator, `!` and match-arm mutant of its body) and its arm forwarder dev_arm_deadline
-#    (tactics.rs, `-> ()`). Every mutation run mutates the default-feature build, which does not
-#    compile these functions, so their mutants survive vacuously (the mutated source never builds
+#    (tactics.rs, `-> ()`). No mutation run names `dev_reducers` or `load_test_zones`, so none
+#    compiles these functions and their mutants survive vacuously (the mutated source never builds
 #    into the test binary). They are never shipped
 #    (the release module has no dev reducers) and are killed for real by tests that `just test`
 #    runs with `--features dev_reducers`: the `_th4_` tests of dev_clock_tests.rs kill every
@@ -84,7 +84,8 @@
 #    `==`). The `just test` line with `--features load_test_zones` kills them (the sr9b_1 and
 #    sr9b_2 tests). A dev reducer's body replacement (`-> Ok(())`) needs no entry, nor does its
 #    write forwarder's (dev_place_character, movement.rs): the deletion-gate census
-#    (privacy_enforcement_tests.rs) reads the source, so it fails in the default build too.
+#    (privacy_enforcement_tests.rs) reads the source, so it fails in a build without the feature
+#    too.
 #
 # 9. apply_delta (tactics_settle.rs:362:36) `<` -> `<=` on the resize guard: Vec::resize(n, 0) at
 #    len == n is a no-op, so the two comparisons differ only where the result is identical (an

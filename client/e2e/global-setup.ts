@@ -20,7 +20,9 @@ export default function globalSetup(): void {
   // 13.5h dev_reducers publish point: CI pre-builds the module wasm
   // with `--features dev_reducers` and points MR_DEV_MODULE_WASM at the artifact;
   // when set, publish that binary via --bin-path (double-quoted — path-with-spaces
-  // hygiene). Local runs without the var keep the plain --module-path publish.
+  // hygiene). Local runs without the var publish from --module-path and name
+  // `open_join` for the build: the suite's players join anonymously, and a build
+  // that names no feature admits nobody. That build holds no dev reducer.
   const devWasm = process.env.MR_DEV_MODULE_WASM;
   // Parse-don't-validate at the boundary: the value is interpolated into a shell
   // string, so reject anything outside a conservative path charset (spaces OK —
@@ -36,7 +38,9 @@ export default function globalSetup(): void {
       `MR_DEV_MODULE_WASM contains characters outside [A-Za-z0-9/._ -]: ${JSON.stringify(devWasm)}`,
     );
   }
-  const moduleArg = devWasm ? `--bin-path "${devWasm}"` : '--module-path ../server-module';
+  const moduleArg = devWasm
+    ? `--bin-path "${devWasm}"`
+    : '--module-path ../server-module --build-options="--features open_join"';
   execSync(`spacetime publish -s ${server} ${moduleArg} --delete-data -y ${db}`, {
     stdio: 'inherit',
   });

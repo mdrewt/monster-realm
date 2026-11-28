@@ -60,10 +60,11 @@ sha2 = { version = "0.11", default-features = false }
 # The ownership features (docs/local-play.md §3, "The build input"; the constants are computed
 # from them in src/accounts.rs `build_profile`). A release feature wins over a dev feature.
 #
-# `open_join` is in `default`: a build that names no feature is the test build. It admits
-# anonymous players and trusts the dev issuers. A module to ship is built by
-# `just release-module <official|world>`, which names exactly one release feature and no default.
-default = ["open_join"]
+# `default` is empty: a build that names no feature enforces ownership, trusts no login issuer and
+# holds no attestation key, so it admits nobody. A site that builds for anonymous play names
+# `open_join` itself. A module to ship is built by `just release-module <official|world>`, which
+# names exactly one release feature.
+default = []
 # A release build for the official server: the production login issuer, ownership enforced.
 official = []
 # A release build for a world a player hosts: no login issuer, ownership enforced.
@@ -72,11 +73,12 @@ world = []
 dev_issuers = []
 # Switches the ownership check off, for tests and anonymous play. Implies `dev_issuers`.
 open_join = ["dev_issuers"]
-# Dev/test-only reducers (grant_bait, dev_expire_tactical_window), OFF in release/publish.
-# Enabled for the e2e via a pre-built wasm + `spacetime publish --bin-path`.
-# `spacetime build --features` exists (v1.11.0 through v2.8.1) but is `.hide(true)`, so it
-# never shows in `--help`; the `--bin-path` route is the one the recipes use. Implies
-# `open_join`. Never add to `default`.
+# Dev/test-only reducers (grant_bait, dev_expire_tactical_window), in no module to ship and in no
+# recipe's `--module-path` publish. The e2e builds name it: they build the wasm with cargo and
+# publish it with `spacetime publish --bin-path`.
+# A feature reaches cargo through the CLI two ways (measured on 2.16.1): `spacetime build
+# --features <f>`, which is `.hide(true)` and so never shows in `--help`, and `spacetime
+# publish|generate --build-options="--features <f>"`. Implies `open_join`. Never add to `default`.
 dev_reducers = ["open_join"]
 # The load-test build (`just load-host`): game-core's 100 generated zones and the dev reducer
 # `dev_place_in_load_zone`. It implies `dev_reducers`, so nothing that refuses a dev build publishes
