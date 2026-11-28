@@ -257,7 +257,8 @@ lines name 213 symbols, and 208 of them are declared in `main.ts`.
 - **Three call cycles cross the module map.** `applyMenuStep` calls `dispatch` and
   `showSignInGate` calls `applyStack` (both menu); `runInteract` (interact) calls `dispatch`;
   `closeTradeEditor` (screens) calls `dispatch`. `commands.ts` sits above all three in the map
-  and imports them. The battle port serves `battleFrame.ts` alone.
+  and imports them. Their callers reach `dispatch` and `applyStack` through the command port
+  (2.2). The battle port serves `battleFrame.ts` alone.
 - **One lower module writes a higher one's bindings.** `holdResultsForPlayback` (battle frame)
   assigns `outcomeShownAtMs` and `autoContinuedAtMs`, which `frames.ts` owns.
 
@@ -269,8 +270,10 @@ object with those two members, installed once by `main.ts` before its first list
 and throwing until then, as the hint host does. `battleFrame.ts`, `screens.ts`, `menu.ts` and
 `interact.ts` call it. The battle port keeps what only the battle frame needs from the stack:
 the read of `contextStack` in `popOverBattleBeforeSwitch` and `buildResultsPanel`, and a function
-that clears the outcome edge for `holdResultsForPlayback`. Extraction 3 adds the command port
-while every caller is still in `main.ts`, so the moves after it are moves.
+that clears the outcome edge for `holdResultsForPlayback`. The command port's eight callers
+(`buildDeployPanel`, `buildResultsPanel`, `tacticsShellDeps`, `runInteract`, `applyMenuStep`,
+`closeTradeEditor`, `popOverBattleBeforeSwitch` and `showSignInGate`) call it from `main.ts`, so
+moving them into those four modules changes no call to `dispatch` or `applyStack`.
 
 ### 2.3 Disposition of extractions 7 to 18
 
@@ -295,10 +298,10 @@ none is dropped.
 | 17 | `shell/input.ts` | kept; takes the pad poll | 14 |
 | 18 | `shell/devHooks.ts` | kept; takes `MrSessionOffer`, `mrSessionOffer` | 15 |
 
-All twelve keep their relative order. They are reordered only against the new work: extraction
-3 of section 4 lands first, because it removes the cycles; the issuer `account.ts` builds the
-sign-in offer from is in `shell/config.ts`. The code that moves into `account.ts` and `menu.ts` calls the
-hand-off port, `platform/handoff.ts`.
+All twelve keep their relative order. The callers in 2.1's three cycles reach `dispatch` and
+`applyStack` through the command port (2.2), and the issuer `account.ts` builds the sign-in offer
+from is in `shell/config.ts`. The code that moves into
+`account.ts` and `menu.ts` calls the hand-off port, `platform/handoff.ts`.
 
 ## 3. Duplication and structure across `client/src/`
 
@@ -358,7 +361,6 @@ fixed in the slice. The slice for a row deletes that row. The symbol lists are m
 
 | # | Module | Kind | Tier | Creates | Covering tests | Feature change |
 |---|---|---|---|---|---|---|
-| 3 | command port | interface | hard | `client/src/shell/commandPort.ts` | `client/src/main.dispatch.test.ts`, `client/src/main.menu.test.ts`, `client/src/main.signInGate.test.ts`, `client/src/main.social.test.ts` | none added, none removed |
 | 4 | notices | interface | hard | `client/src/shell/notices.ts` | `client/src/main.notices.test.ts`, `client/src/main.noticesRt.test.ts`, `client/src/main.reconnectStack.test.ts` | none added, none removed |
 | 5 | battle frame | interface | hard | `client/src/shell/battleFrame.ts` | `client/src/main.dispatch.test.ts`, `client/src/main.battle-reseed.test.ts`, `client/src/tactics/tacticsBattle.test.ts`, `client/src/tactics/deployPanel.test.ts`, `client/src/tactics/results.test.ts` | none added, none removed |
 | 6 | frames | interface | hard | `client/src/shell/frames.ts` | `client/src/main.dispatch.test.ts`, `client/src/main.reconnectStack.test.ts`, `client/src/main.a11yFocus.test.ts` | none added, none removed |
@@ -389,14 +391,6 @@ resolver gains the module when it resolves a string; this file;
 set. A row that moves boot wiring or a DEV hook (5, 14, 15) runs the full end-to-end suite as
 well.
 
-3. `client/src/shell/commandPort.ts` is created (2.2). `main.ts` installs it beside the hint host.
-   `buildDeployPanel`, `buildResultsPanel`, `tacticsShellDeps`, `runInteract`, `applyMenuStep` and
-   `closeTradeEditor` call `dispatch` through it, and `popOverBattleBeforeSwitch` and
-   `showSignInGate` call `applyStack` through it. Touches: `client/src/main.ts`,
-   `client/src/shell/commandPort.ts`, `client/src/shell/commandPort.test.ts`, the
-   `client/src/main.*.test.ts` family, `client/test-util/mainBootHarness.ts`, this file,
-   `docs/refactors/client-shell.md`, `ARCHITECTURE.md` and `docs/DECISIONS.md`, whose entry "Code
-   leaves `client/src/main.ts` into owner modules" names the ports and gains this one.
 4. `client/src/shell/notices.ts` takes `dismissedRequests`, `announcedRequests`,
    `answeredRequests`, `noticeInput`, `livePending`, `requestLine`, `releaseAnswered` and
    `openedTradeSessions`. Interface: `dispatch`, `worldPort`, `openTradeEditor`,

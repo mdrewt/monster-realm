@@ -1499,7 +1499,9 @@ view; its registrations keep the order the plan lists, and the locale block stay
 module imports only the shell modules below it. A lower module reaches upward through a typed port
 `main.ts` installs, which throws until installed, or logs to the console until installed when its
 caller swallows a throw (the pad's fault sink: a failing reporter must not stop the poll that
-releases held buttons), or through the parameter object of a frame-loop pump.
+releases held buttons), or through the parameter object of a frame-loop pump. Code the module map
+puts below the dispatcher reaches `dispatch` and `applyStack` through one such port,
+`shell/commandPort.ts`, which imports no shell module.
 
 **Why.** Every `main.*` suite resets the module registry and imports `main.ts`, so module-level
 state in a shell module resets per test and no suite changes how it boots. An import
@@ -1998,7 +2000,7 @@ port's function through one page global, the shell bridge, set before the client
 hook that sets the shell document; it holds functions only, and a verb it does not hold runs the
 browser's code. Every shell implements the same bridge, so one bundle runs in a tab, in Electron and
 in Tauri. The first port is the hand-off to the operating system: open an address outside the game,
-save a file the client made. No port is built yet.
+save a file the client made.
 
 **Why.** The recorded shell is Electron, and that choice rests on an overlay nobody has measured: the
 measurement runs a Tauri window beside it with the same bundle and may reverse the choice. A desktop

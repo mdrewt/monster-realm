@@ -52,7 +52,8 @@ extractions still to make, with the symbols each takes, are section 4 of
    `shell/` nor `main.ts`.
 8. **Views get their handlers from the composition root.** `main()` constructs each boot-built
    view with its handler closures and hands the instance to `shell/views.ts`. The three battle
-   views are built lazily inside `shell/battleFrame.ts` with the handlers its port carries.
+   views are built lazily inside `shell/battleFrame.ts`; their handlers run commands through the
+   command port.
 
 ## Module map
 
@@ -98,7 +99,7 @@ registers its first listener. A port member called before the install throws.
 | Lower module | Reaches up for | Today's upward references |
 |---|---|---|
 | `feedback.ts` | whether the main menu is the top frame, and a repaint of the menu | none: `hintOnMenu` asks the host `installHintHost` took (`menuOnTop`), and `paintWorldHint` calls its `repaintMenu` |
-| `commandPort.ts`, for `battleFrame.ts`, `screens.ts`, `menu.ts` and `interact.ts` | `dispatch` and `applyStack` | `buildDeployPanel`, `buildResultsPanel`, `tacticsShellDeps`, `runInteract`, `applyMenuStep` and `closeTradeEditor` call `dispatch`; `popOverBattleBeforeSwitch` and `showSignInGate` call `applyStack` |
+| `commandPort.ts`, for `battleFrame.ts`, `screens.ts`, `menu.ts` and `interact.ts` | `dispatch` and `applyStack` | none: `installCommandPort` took both, and from `main.ts` `buildDeployPanel`, `buildResultsPanel`, `tacticsShellDeps`, `runInteract`, `applyMenuStep` and `closeTradeEditor` call the port's `dispatch`, and `popOverBattleBeforeSwitch` and `showSignInGate` its `applyStack` |
 | `battleFrame.ts` | the stack as the battle frame reads it, and the outcome edge | `popOverBattleBeforeSwitch` and `buildResultsPanel` read `contextStack`; `holdResultsForPlayback` assigns `outcomeShownAtMs` and `autoContinuedAtMs` |
 
 The command port is one typed object with two members, declared in a module that imports no
@@ -294,7 +295,6 @@ function takes over.
 |---|---|---|
 | `notices.ts` | `markAnswered`, `dismissRequest`, `markAnnounced`, `clearNoticeSets` | every mutation of the three request sets |
 | `notices.ts` | `markSessionOpened`, `forgetOpenedSessions` | every mutation of `openedTradeSessions` |
-| `commandPort.ts` | `installCommandPort` | the command port |
 | `battleFrame.ts` | `installBattlePort` | the battle port |
 | `battleFrame.ts` | `mountBattleFrame` | the `battleMount` assignment at boot |
 | `battleFrame.ts` | `resetBattleFrame` | the battle and tactics lines of `resetPredictionState`, in their position |
