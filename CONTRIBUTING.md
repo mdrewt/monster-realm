@@ -67,5 +67,6 @@ To check a change before pushing, `just mutate-diff` mutates only the `game-core
 `server-module` lines changed against `origin/master` (pass another base, e.g. `just mutate-diff
 HEAD~1`; an empty diff exits 0 without building). While killing survivors in one file,
 `cargo mutants -p <crate> -f <file> --iterate` re-tests only the mutants the previous run missed;
-for the server crate add `--features open_join`, because its tests join anonymously and a build
-that names no feature admits nobody.
+for the server crate add `--features open_join --test-tool nextest`: its tests join anonymously,
+which a build that names no feature refuses, and they need the process per test that nextest gives
+them.
