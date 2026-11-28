@@ -411,10 +411,11 @@ coverage: wasm
     cd client && npm ci && npm i --no-save -D @vitest/coverage-v8@$(node -p 'require("vitest/package.json").version') && npx vitest run --coverage --coverage.provider=v8 --coverage.reporter=text --coverage.reporter=json-summary
 
 # Every crate's mutants. The module's tests join anonymously, so each test run names `open_join`;
-# `--test-workspace=true` makes that run the whole workspace's, because cargo refuses the feature
-# when the run selects a package that does not have it.
+# `--test-workspace=true` makes each mutant's run the whole workspace's, because cargo refuses the
+# feature on a run that selects only a package without it. nextest, because the module's tests
+# need a process each.
 mutate:
-    cargo mutants --workspace --test-workspace=true --features monster-realm-module/open_join
+    cargo mutants --workspace --test-workspace=true --features monster-realm-module/open_join --test-tool nextest
 
 # game-core mutation gate, zero tolerance: any missed mutant fails; timeouts are
 # tolerated only when missed=0.
@@ -459,47 +460,46 @@ mutate-core shard="":
 # Mutate only the code COMMITTED since `base` (uncommitted edits are not seen); `base...HEAD`
 # diffs from the merge base. `package` empty = game-core and server-module, the local pre-push
 # check; `monster-realm-module` alone is the server's zero-tolerance gate, which CI runs on every
-# pull request. An empty diff exits 0 without building. Same exit triage as mutate-core (0 ok,
-# 2 missed, 3 timeouts).
+# pull request. A crate whose diff is empty is skipped without building. Same exit triage as
+# mutate-core (0 ok, 2 missed, 3 timeouts).
 #
-# The module's tests join anonymously, so every test run names `open_join`. With both crates the
-# run is the whole workspace's (`--test-workspace=true`): cargo refuses the feature when the run
-# selects game-core, which does not have it.
+# Each crate is its own cargo-mutants run over its own diff, so a mutant is tested by its own
+# crate's tests. The module's run names `open_join`, because its tests join anonymously; cargo
+# refuses that feature on a run that selects game-core alone, so the two crates cannot share a
+# run. A crate with a survivor stops the recipe, so `mutants.out` then holds that crate's run.
 mutate-diff base="origin/master" package="":
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{package}}" in
-        "")
-            paths=(game-core server-module)
-            packages=(-p game-core -p monster-realm-module)
-            features=(--test-workspace=true --features monster-realm-module/open_join)
-            ;;
-        monster-realm-module)
-            paths=(server-module)
-            packages=(-p monster-realm-module)
-            features=(--features open_join)
-            ;;
+        "") crates=(game-core monster-realm-module) ;;
+        monster-realm-module) crates=(monster-realm-module) ;;
         *) echo "mutate-diff: package '{{package}}' is not empty or monster-realm-module" >&2; exit 64 ;;
     esac
     diff_file=$(mktemp)
     trap 'rm -f "$diff_file"' EXIT
-    git diff "{{base}}...HEAD" -- "${paths[@]}" > "$diff_file"
-    [ -s "$diff_file" ] || { echo "mutate-diff: no ${paths[*]} changes vs {{base}}"; exit 0; }
     ulimit -v 8000000 2>/dev/null || true
     # One rebuild per mutant: incremental, for the same reason as mutate-core.
     export CARGO_INCREMENTAL=1
-    status=0
-    cargo mutants "${packages[@]}" "${features[@]}" --test-tool nextest --in-diff "$diff_file" || status=$?
-    if [ "$status" -ne 0 ] && [ "$status" -ne 2 ] && [ "$status" -ne 3 ]; then
-        echo "cargo mutants failed with exit $status (not a mutation verdict)" >&2
-        exit "$status"
-    fi
-    # Judge by missed.txt, not the exit code alone: exit 3 (timeouts) can accompany missed mutants.
-    if [ -s mutants.out/missed.txt ]; then
-        cat mutants.out/missed.txt >&2
-        echo "mutate-diff: $(grep -c '' mutants.out/missed.txt) missed mutant(s) in the diff" >&2
-        exit 1
-    fi
+    for crate in "${crates[@]}"; do
+        case "$crate" in
+            game-core) path=game-core; features=() ;;
+            monster-realm-module) path=server-module; features=(--features open_join) ;;
+        esac
+        git diff "{{base}}...HEAD" -- "$path" > "$diff_file"
+        [ -s "$diff_file" ] || { echo "mutate-diff: no $path changes vs {{base}}"; continue; }
+        status=0
+        cargo mutants -p "$crate" ${features[@]+"${features[@]}"} --test-tool nextest --in-diff "$diff_file" || status=$?
+        if [ "$status" -ne 0 ] && [ "$status" -ne 2 ] && [ "$status" -ne 3 ]; then
+            echo "cargo mutants failed with exit $status (not a mutation verdict)" >&2
+            exit "$status"
+        fi
+        # Judge by missed.txt, not the exit code alone: exit 3 (timeouts) can accompany missed mutants.
+        if [ -s mutants.out/missed.txt ]; then
+            cat mutants.out/missed.txt >&2
+            echo "mutate-diff: $(grep -c '' mutants.out/missed.txt) missed mutant(s) in the $path diff" >&2
+            exit 1
+        fi
+    done
 
 # The full server-module mutation sweep, a report: it lists every surviving mutant and exits 0
 # whatever survives; it fails only when cargo-mutants gave no verdict. The server's zero-tolerance
