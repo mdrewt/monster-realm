@@ -53,7 +53,7 @@ only `server-module` turns on its `spacetimedb` feature.
 | `world` | Tile maps, `apply_move`, spawn, grass detection; `STEP_MS` (200), `MOVE_QUEUE_CAP` (2), `PARTY_SIZE` (6), `PARTY_SLOT_NONE` (255). |
 | `types` | Shared data types (`CharacterState`, `Direction`, `MoveInput`, `Millis`, `TilePos`, `NpcInteraction`). |
 | `monster` | Individuality rolls (IVs, nature), stat derivation, levels and XP curve. |
-| `combat` | Battle state and turn resolution, damage and accuracy, statuses, abilities, weather, AI, XP rewards, PvP forfeit and challenge staleness. |
+| `combat` | The types stored in `Battle.state` and the content rows, and the rules a production path calls: the damage formula and accuracy check, the type chart, lead selection, the status countdown, the XP rules, and the PvP forfeit and challenge rules. The rest (the turn driver in `combat/resolve.rs`, the enemy skill picker, the entry-ability hooks, the weather chip and countdown) has no production caller; `docs/refactors/combat-carried-rules.md` lists what is left to remove and in what order. Where a carried rule's signature takes the 1v1 `BattleState`, `tactics/` states it once. |
 | `tactics` | Tactical-battle rules (M-battle-tactics): `geometry` (Manhattan metric, line of sight, the one skill target-set function, flank), `movement` (stride bands, terrain × class weights, Dijkstra pathing with an explicit `(cost, y, x)` tie-break, disengage), `map` (the battle-map validator), `tuning` (`TacticsTuning`, `BattleKind`), `economy` (AP costs, Exert, Guard), `initiative`, `resolve` (`TacticalState` and the damage pipeline), `upkeep`, `outcome` (KO sweep, adjudication), `types` (the storage enums `QueuedAction`, `TurnState`, `Phase`), `events` (the `battle_event` payload), `clock`, `queue` (`TacticalBattle`: the submit gate and executor), `ai`, `encounter`, `recruit`, `rewards`, and `content` (the sidecar registries and lints). `tactics::golden` runs a shared JSON fixture natively and through the `tactics_golden` wasm export to prove native = wasm. |
 | `taming` | dev-only `grant_bait`; the tactical recruit is a `submit_queue` entry (the 1v1 `attempt_recruit` is deleted since bt-17) |
 | `evolution` | Evolution-graph eligibility and the transform. |
@@ -234,7 +234,7 @@ writes:
 | `accounts` | `start_guest_claim`, `complete_guest_claim`, `delete_account`, `cancel_account_deletion`, scheduled `guest_claim_reaper` and `account_deletion_reaper` |
 | `access` | `set_world_access` (owner-only): the world's access rule (`Open`, `Password` or `Allowlist`) and the admission list; `require_admitted` opens every non-owner-only client reducer but `unbind_world_account` |
 | `world_binding` | `request_bind_nonce`, `bind_world_account` and their owner-relayed forms `request_bind_nonce_for`, `bind_world_account_for`; `unbind_world_account`, the one client reducer outside the owner-only set with no admission check, which erases the caller's `world_account` row with its armed re-check, its binding and its nonce, and withdraws its admission row when a `world_account` row went; owner-only `set_world_names`, `set_world_allowlist` (the list holds handles) and `drop_world_binding` (the same erasure for a named identity; does not write the list). Owns `world_binding`, `world_bind_nonce`, `world_name` and `world_allowlist`, and verifies the attestation (`verify_attestation`), whose binding grants nothing; a build with no attestation key refuses the four nonce and bind reducers; `delist_account_of`, the deletion cascade's step, takes a deleted identity's handle off the list |
-| `account_checks` | procedures `check_account` (a client's one-use ticket), `check_account_for` (owner-only relay) and scheduled `recheck_account` (the database only, armed by the connect reducer): the world asks the account service the build names (`POST /world/check`, 3 s timeout) whether an account owns the game and stores the answer. Owns `world_account`, `world_check_budget` and `recheck_schedule`; `entitled` and the `Allowlist` rule read `world_account` |
+| `account_checks` | procedures `check_account` (a client's one-use ticket), `check_account_for` (owner-only relay), scheduled `recheck_account` (the database only, armed by the connect reducer) and scheduled `host_account_check` (the database only: the account the world's host plays under): the world asks the account service the build names (`POST /world/check`, 3 s timeout) whether an account owns the game and stores the answer. Owns `world_account`, `world_check_budget`, `recheck_schedule`, `world_move`, `world_egress` and `host_check_schedule`; `entitled` and the `Allowlist` rule read `world_account` |
 | `privacy` | `request_data_export`, scheduled `export_bundle_reaper` |
 | `observability` | scheduled `mr_heartbeat` |
 | `playtest` | scheduled `playtest_reaper` |
@@ -271,7 +271,15 @@ past `MAX_ITEM_STACK` or `MAX_BALANCE` is refused before anything moves (`check_
   so the heartbeat is the only schedule).
 - `sync_content` does the same reseed for the owner on later publishes, and brings the
   `module_info` row in line with the published module whether or not the content
-  changed. It refuses other callers. `just publish` calls it after the publish.
+  changed. It refuses other callers. `just publish` calls it after the publish, and every
+  recipe and script that publishes over a database and keeps its data calls it as the
+  publishing identity and fails when the call is refused.
+- Protocol numbers. `PROTOCOL_VERSION` and `MIN_CLIENT_PROTOCOL` (never above it) are
+  constants in `game-core/src/lib.rs`; `client-wasm` exports them as `protocol_version()` and
+  `min_client_protocol()`, and `module_info::ensure_module_info` writes them into row 0 of
+  `module_info` from `init` and `sync_content`. `client/src/net/wireContract.test.ts` holds the
+  generated bindings against one recorded entry per protocol number in
+  `client/src/net/wireContract.json`.
 - `on_connect` first refuses an identity the world's access rule does not admit
   (`access::require_admitted_at_connect`), then records the connection in the private
   `player_session` table and, for
@@ -286,21 +294,22 @@ past `MAX_ITEM_STACK` or `MAX_BALANCE` is refused before anything moves (`check_
   the conversation, character and player rows. As it deletes the character it saves
   the character's zone, tile and facing in the private `last_position` table
   (`movement::save_last_position`).
-- Schedules. In a world with nobody connected the one schedule that keeps running is the
-  60 s `mr_heartbeat`, which writes no row. Every reaper is a one-shot armed when something is
-  owed. One that serves an entity (a trade offer, a challenge, an account deletion) has a row
-  per entity at its deadline. `playtest_reaper` and `export_bundle_reaper` bound a table by age
-  and have at most one row for the whole table, at the oldest row's expiry: the insert arms
-  it, the reaper re-arms it from the rows it leaves, and an empty table has none. Each has a
-  fixed delay (300 s and 3600 s), and a run arms its next run no sooner than that delay from
-  now, so it runs at most once per delay; work owed at once (a table over its cap, a backlog
-  one run could not finish) waits that delay too. `battle_summary_reaper` bounds its table by
-  row count in the same shape (see "Schema and privacy model"). The runtime consumes a
-  one-shot row even when its reducer's transaction fails, and the re-arm rolls back with that
-  transaction, so a failed run leaves nothing armed until the next write to the table (a
-  recruit attempt for `playtest_event`; an export request or a purge for `export_bundle`),
-  `init` or `sync_content` re-arms it from the table's true oldest row.
-  `docs/runbooks/observability-dr.md` says how to see that state.
+- Schedules. In a world with nobody connected the schedules that keep running are the 60 s
+  `mr_heartbeat`, which writes no row, and, once the owner has named the host's identity,
+  the hourly `host_account_check` tick. Every reaper is a one-shot armed when something is
+  owed. One that serves an entity (a trade offer, a challenge, an account deletion) has a
+  row per entity at its deadline. `playtest_reaper` and `export_bundle_reaper` bound a table
+  by age and have at most one row for the whole table, at the oldest row's expiry: the
+  insert arms it, the reaper re-arms it from the rows it leaves, and an empty table has
+  none. Each has a fixed delay (300 s and 3600 s), and a run arms its next run no sooner
+  than that delay from now, so it runs at most once per delay; work owed at once (a table
+  over its cap, a backlog one run could not finish) waits that delay too.
+  `battle_summary_reaper` bounds its table by row count in the same shape (see "Schema and
+  privacy model"). The runtime consumes a one-shot row even when its reducer's transaction
+  fails, and the re-arm rolls back with that transaction, so a failed run leaves nothing
+  armed until the next write to the table (a recruit attempt for `playtest_event`; an export
+  request or a purge for `export_bundle`), `init` or `sync_content` re-arms it from the
+  table's true oldest row. `docs/runbooks/observability-dr.md` says how to see that state.
 
 ### Movement
 
@@ -459,7 +468,59 @@ call or by the tick.
   `my_pending_evolution_notices`; `ack_evolution_notices` drains an acknowledged
   prefix. See the evolution entry in `docs/DECISIONS.md`.
 
+### Dev and load-test builds
+
+- **Features** (`server-module/Cargo.toml`). `dev_reducers` compiles `grant_bait`
+  (`taming.rs`) and `dev_expire_tactical_window` (`dev_clock.rs`); `load_test_zones`, which
+  implies `dev_reducers`, also compiles `dev_place_in_load_zone` (`load_dev.rs`).
+  `dev_reducers` implies `open_join`; `default` holds `open_join` and no dev-reducer
+  feature. A release feature (`official` or `world`) named with a dev-reducer feature does
+  not compile, and `just release-module` refuses an artefact that names a dev reducer or
+  whose profile compiles one.
+- **Published-module checks.** The playtest recipes publish the default build and then check
+  the *published* module with `spacetime describe --json`
+  (`scripts/verify-release-reducers.mjs`, whose `FORBIDDEN_REDUCERS` lists every dev reducer
+  name), and check that the production client bundle holds no DEV debug hooks
+  (`scripts/verify-build-hooks.mjs`). The committed client bindings are generated from the
+  default build, and the `bindings-drift` eval fails if a dev reducer appears in them.
+- **`dev_expire_tactical_window`** is callable only by the module owner (the `config` row's
+  `owner_identity`, the check `sync_content` makes). It moves the named side's open turn window
+  deadline to the call's time and arms one deadline fire there, through the dev-gated forwarder
+  `tactics::dev_arm_deadline`; the scheduler's own `tactical_deadline_fire` expires the window as
+  at a real deadline. It refuses a call that finds the other side's window open, acts on any
+  Active tactical battle, wild, PvP or Practice (a wild expiry is the AutoFlee a real deadline
+  gives), and refuses a Deploying or Finished battle.
+- **`dev_place_in_load_zone`** exists only in the load-test build, which `just load-host`
+  publishes to a `monster-realm-load-zones*` database on a loopback host (a remote one only
+  with `MR_LOAD_ALLOW_REMOTE=1`). That build also appends game-core's 100 generated zones,
+  16×16 floor with ids 10000–10099 (`game-core/src/load_test_zones.rs`), to the zone,
+  zone-map and tactics-zone registries. Any caller may call the reducer, but only for
+  itself: it moves the caller's character to a load zone's spawn tile as the tick's warp arm
+  moves a character. The character arrives Idle, its queued moves are cleared and published
+  with the seq kept, and the zone's tick is armed. It refuses an id outside the band, a
+  caller with no character or move intent row, and a caller in an ongoing battle. The load
+  driver (`mr_load_driver --zones`) calls it once per bot after the join, to spread its bots
+  over the zones. The browser client is not supported in a load zone: its wasm has no
+  load-zone map, so it cannot predict there.
+- **A new dev reducer** calls the deletion gate first; joins `FORBIDDEN_REDUCERS`; joins the
+  census's `EXPECTED_GATED` (`privacy_enforcement_tests.rs`) and, when it adds a module,
+  `EXPECTED_MODULES`, whose `mod` line carries no `cfg` because the census refuses every `cfg`
+  but `cfg(test)`, so the feature gate goes on the module's items; adds `exclude_re` keys for its
+  surviving mutants to `.cargo/mutants.toml` entry 8; and keeps every item it adds behind its
+  feature. The default game-core build compiles no new function for a dev or load feature: a
+  game-core loader reaches gated code through a macro on the loader's existing line, whose
+  feature-off arm expands to the loader's original expression (`load_test_zones::zones!`).
+
 ### Working with SpacetimeDB
+
+- **Lockstep.** The spacetime CLI and host, the Rust crate and the npm SDK are one version: the
+  root `Cargo.toml` (`=2.16.1`), `SPACETIME_VERSION` in `scripts/ci-tools.sh`, and
+  `client/package.json` (`^2.16.1`, locked in `client/package-lock.json`).
+  `scripts/ci-tools.test.mjs` holds the resolved crates (`cargo metadata`), the locked npm SDK
+  and the generated bindings to one version; `bindings-drift` holds the bindings to the CLI on
+  PATH, which CI installs from `SPACETIME_VERSION`. Upgrades follow
+  `docs/runbooks/spacetimedb-upgrade.md`. The nightly `smoke-republish` job republishes over
+  live data without `--delete-data` and checks that the data survives.
 
 - Syntax is 2.x: `#[spacetimedb::table(accessor = x)]`, `ctx.sender()`,
   `ctx.database_identity()`. `.claude/skills/spacetimedb-reducer` has the details.
@@ -477,7 +538,8 @@ call or by the tick.
 - Subscribing to a private table from the client fails the whole subscription batch.
   Clients subscribe to the owner-scoped view instead.
 - Schema changes on a live database must be additive between consolidations
-  (append columns with a `#[default]`); see `docs/DECISIONS.md`.
+  (append columns with a `#[default]`); see `docs/DECISIONS.md`. An `i64` default is typed
+  (`#[default(0i64)]`): an untyped `0` encodes as 4 bytes and the publish fails.
 
 ## Schema and privacy model
 
@@ -624,6 +686,9 @@ level are resolved before the executor debits the bait, the roll is game-core's
 with the pre-roll HP, and a success rebuilds the wild through `taming::insert_recruited`;
 `Item` entries stay refused (no game-core rule home yet). One anchor, one payout path: no
 client-callable 1v1 reducer exists, and no scheduled one.
+The module declares none of the 1v1 tables `battle_action`, `battle_wild` and
+`pvp_deadline_schedule`, the scheduled `pvp_deadline_reaper` or the `PvpAction` type, and tests
+over the generated module definition hold that none is declared.
 
 The `battle-schema-snapshot` and `spacetime-type-snapshot` evals record every table's
 columns and every nested `SpacetimeType` in `evals/baselines/`, so an unplanned
@@ -632,6 +697,20 @@ generated bindings against the allowed client-visible tables and client-callable
 reducers (`evals/baselines/client-visible-tables.json`,
 `client-callable-reducers.json`). Generated bindings are never edited by hand;
 `just gen` regenerates them, and `bindings-drift` fails when they are stale.
+
+Between consolidations a schema change only adds (`docs/DECISIONS.md`, "Schema changes are
+additive"). An illegal combination of states that a column-type change would rule out is held by
+a checked predicate instead (`accounts::account_state_is_legal` is one). A new table needs an
+entry in `schema::DATA_LIFECYCLE_MANIFEST`, and a new column on an exportable table breaks the
+compile of the exhaustive export fixtures in `server-module/src/privacy_tests.rs`, which forces
+an export-or-omit decision in that table's serializer in `privacy.rs`. A consolidation ships
+with a wipe of every database (`docs/runbooks/playtest-ops.md`, "A schema consolidation") and
+raises `MIN_CLIENT_PROTOCOL` to the new `PROTOCOL_VERSION`. The two schema evals compare each
+baseline with its copy at the merge base and refuse a removal, a reorder or a type change; they
+skip that comparison only when the working baseline carries a top-level `consolidation` key
+whose value is in the evals' own `DECLARED_CONSOLIDATIONS` list and which the merge-base copy
+lacks. `--write` never writes the key, so the next schema change drops it, and a key kept past
+that change fails the eval.
 
 ## Client
 
@@ -1066,7 +1145,9 @@ root, so opening one never closes a sibling.
   sign-in off: it builds no OIDC client, every connection is anonymous, no OIDC request
   leaves the page and the Account section offers no Sign In. `on_connect` creates an
   `account` row only when the token's issuer and audience match
-  `ALLOWED_ISSUERS`/`ALLOWED_AUDIENCE` (`server-module/src/accounts.rs`). The build's
+  `ALLOWED_ISSUERS`/`ALLOWED_AUDIENCE` (`server-module/src/accounts.rs`). A token from an
+  issuer not on the list falls back to anonymous play; one from an allowed issuer with another
+  audience is disconnected. The build's
   login-issuer list comes from `BUILD_PROFILE`, computed from the cargo features;
   `PRODUCTION_LOGIN_ISSUERS` and `DEV_LOGIN_ISSUERS` hold the values. The production list is
   still the fail-closed `.invalid` placeholder, so no account can be created until a
@@ -1075,55 +1156,104 @@ root, so opening one never closes a sibling.
   `VITE_MR_OIDC_CLIENT_ID`, `VITE_MR_OIDC_REDIRECT_URI`,
   `VITE_MR_OIDC_PROVIDER_NAME`).
 - **Claiming guest progress.** The client mints a 64-hex-character claim code
-  (`net/claimCode.ts`), stores it per tab, and calls `start_guest_claim(code)` as the
-  guest before redirecting to sign-in. The server stores it in the private
-  `guest_claim` table with a 15-minute TTL and a one-shot reaper. After sign-in, the
-  account calls `complete_guest_claim(code)`. Guards run in order: signed in, holds
-  an account, not deleting, not already claimed, well-formed code, live claim, not
-  expired, not its own session, guest no longer connected, neither side in a battle,
-  and the account owns no game data yet. Then `rekey_all` moves the guest's persistent
-  game data (monsters and their public projection, evolution notices, inventory,
-  quests and dialogue state, heal cooldown, saved position, wallet, profile) onto the account, the
-  guest's export bundles are purged, the code is consumed, and
-  `claimed_from`/`claimed_at_ms` are stamped. Session and in-flight rows (player,
-  conversation, sessions, battles, trades, challenges) are not moved.
-  "Owns no game data" works because `join_game` is a reducer the client calls, not
-  part of `on_connect`: on a signed-in connection with an unconsumed claim code
-  stored, `net/connection.ts` skips `join_game` and calls `complete_guest_claim`
-  first. It joins only once no unconsumed code remains, or the player declines the
-  claim. An account that already played before claiming fails the claim with "already
-  has game data".
-- **Deletion.** `delete_account` sets `PendingDeletion` and arms a reaper 7 days out;
+  (`crypto.getRandomValues`, `net/claimCode.ts`), stores it per tab, and calls
+  `start_guest_claim(code)` as the guest before redirecting to sign-in. The server stores it
+  in the private `guest_claim` table with a 15-minute TTL (`CLAIM_TTL_MS`) and a one-shot
+  reaper. After sign-in, the account calls `complete_guest_claim(code)`. Guards run in
+  order: signed in, holds an account, not deleting, not already claimed, well-formed code,
+  live claim, not expired, not its own session, guest no longer connected, neither side in a
+  battle, and the account owns no game data yet. Then `rekey_all` moves the guest's
+  persistent game data (monsters and their public projection, evolution notices, inventory,
+  quests and dialogue state, heal cooldown, saved position, wallet, profile, formation and
+  handle) onto the account; the retired guest keeps a tombstone dialogue row (see The
+  starter). Then the guest's export bundles are purged; its world rows (admission and
+  wrong-password record, binding and bind nonce, `world_account` row with its armed
+  re-check, move record) are erased, not moved, so a retired guest identity that reconnects
+  holds no world row; its finished battles are erased as the deletion cascade erases its
+  subject's (`schema::erase_tactical_rows`, then `battle::anonymize_battles`: the per-battle
+  tactical rows go, and the guest's side of each `battle` and `battle_summary` row becomes
+  the tombstone identity); the code is consumed, and `claimed_from`/`claimed_at_ms` are
+  stamped. Session and in-flight rows (player, conversation, sessions, battles, trades,
+  challenges) are not moved. "Owns no game data" works because `join_game` is a reducer the
+  client calls, not part of `on_connect`: on a signed-in connection with an unconsumed claim
+  code stored, `net/connection.ts` skips `join_game` and calls `complete_guest_claim` first.
+  It joins only once no unconsumed code remains, or the player declines the claim. An
+  account that already played before claiming fails the claim with "already has game data".
+- **Deletion.** `delete_account` sets `PendingDeletion` and arms a one-shot reaper
+  `DELETION_GRACE_MS_DEFAULT` (7 days, `game-core/src/accounts/deletion.rs`) out;
   `cancel_account_deletion` reverses it and declines trade offers made to the account,
   and trade sessions opened with it, after it asked to be deleted. While deletion is pending, the account cannot start
   new battles, trades, challenges or other writes (`guards::require_not_deleting`),
   but commitments made before the request can still finish. The reaper resolves live
   interactions, forces ongoing battles to a terminal result, erases or anonymises
-  every table per the manifest, and stamps `terminal_at_ms`. A later sign-in with the
-  same identity starts a fresh account.
-- **Export.** `request_data_export` writes the caller's exportable tables as JSON
-  chunks into the private `export_bundle` table, read back through
-  `my_export_bundle`. It enforces a per-caller cooldown, a unique creation stamp per
-  bundle, and a global live-row cap (smaller for callers without an account, smaller
-  still without a wallet). A reaper deletes bundles older than 7 days within an hour
-  of their expiry; it is scheduled only while bundles exist, one one-shot at the oldest
-  expiry, and runs at most once an hour. The
-  client assembles the chunks (`ui/exportAssembly.ts`) and offers the file for
-  download from the privacy overlay, which opens from the account overlay (`C`).
-- **Ranked PvP** will require accounts on both sides once a real issuer is set
-  (`pvp.rs` `ranked_account_gate`). Until then the gate is inactive.
+  every table per the manifest, and stamps `terminal_at_ms`. `Anonymize` also covers
+  `leaderboard_top`, which holds only an identity its anonymized `profile` row keeps: the
+  cascade re-derives it after tombstoning the name instead of overwriting it. A later sign-in
+  with the same identity starts a fresh account.
+- **Export.** `request_data_export` (`server-module/src/privacy.rs`) writes the caller's
+  exportable tables as JSON chunks of `EXPORT_CHUNK_ROWS` (500) rows into the private
+  `export_bundle` table, read back through `my_export_bundle`. It enforces a per-caller
+  cooldown, a unique creation stamp per bundle (a request under contention is refused), and
+  a global live-row cap (smaller for callers without an account, smaller still without a
+  wallet). A reaper deletes bundles older than 7 days within an hour of their expiry; it is
+  scheduled only while bundles exist, one one-shot at the oldest expiry, and runs at most
+  once an hour. The client assembles the chunks (`ui/exportAssembly.ts`) and offers the file
+  for download from the privacy overlay, which opens from the account overlay (`C`).
+- **The starter.** A first `join_game` grants the starter monster and the kit in
+  `game-core/content/starter_kit.ron` (200 gold, 2 Lure Berries, 1 Antidote), which
+  `validate_starter_kit` checks at publish. The grant is recorded by the flag
+  `sys:starter_claimed` (`npc::STARTER_CLAIMED_FLAG`) in the owner's private
+  `player_dialogue_state.flags`, set in the same transaction as the kit;
+  `onboarding::starter_grant(claimed, owns_monster)` is the rule. A kit that does not fit the
+  stack and balance caps is skipped with a `starter_kit_skipped` log line and the flag stays
+  unset. `validate_npc_content` refuses any dialogue condition or effect, quest start condition
+  or quest step condition that names a `sys:` flag. The guest claim's `npc::rekey_npc_state`
+  moves the dialogue row to the account and leaves the retired guest a tombstone row: its `sys:`
+  flags, the starter flag and a copy of its done quests.
+- **Tags and lead level.** The private `player_handle` table (`owner_identity` primary key,
+  `discriminator: u32` `#[unique] #[auto_inc]`) is owned by `onboarding.rs`
+  (`ensure_handle`, `rekey_handle`, `erase_handle`, `has_handle`). `join_game` finds the
+  caller's row or mints one (insert 0, the column's sequence assigns the value), refuses the
+  join with `handle unavailable` when the datastore refuses the mint, and copies the value
+  onto the public `player.discriminator`. The claim moves the row (`rekey_all`), and a
+  handle is game data (`account_has_game_data`). The deletion cascade erases the handle and
+  zeroes `discriminator` and `lead_level` on the surviving `player` row; the export carries
+  the handle row. `player.lead_level` is the stored level of the owner's lead party monster:
+  `battle::refresh_lead_level` writes it only when the value differs, and the dual-write
+  seam (`monster_mgmt::update_monster_synced`) calls it when a write changes a monster's
+  `level` or `party_slot`; `join_game` and the session-trade transfer
+  (`trading_session::apply_swap`) call it themselves. On the client `StorePlayer` carries
+  `discriminator` and `leadLevel` apart from the raw `name`. `client/src/ui/playerTag.ts` is
+  the one place a tag is formatted: `formatTag(discriminator)` gives `#` and the number
+  padded to at least four digits through the catalog key `identity.tag` (no tag for 0), and
+  `taggedName(players, identity)` joins the name and the tag through `identity.taggedName`
+  (`Drew #0042`). The Social screen's Players row shows name, tag, lead level and Nearby,
+  each its own element: the tag in `--mr-text-muted`, which the accessibility suite checks
+  in both themes, except on the cursor row; the level through the battle HUD's
+  `tactics.hud.level` copy so it reads the same in both places, and none for 0. The incoming
+  trade and challenge request banner and the Trades-tab session row show the tagged name;
+  the tactical battle clock, the trade editor heading, the rename view and the Rankings tab
+  show the name alone. `playerName` (`client/src/ui/tradeSessionModel.ts`) shows `#` and the
+  first eight hex digits of the identity when the store holds no row for it or the row's
+  name is empty; that is not a tag (`validate_name` refuses an empty name at join and
+  rename, so only an identity the store does not hold reaches it, and that identity has no
+  tag to show).
+- **Ranked PvP** will require accounts on both sides once a real issuer is set (`pvp.rs`
+  `ranked_account_gate`). The gate reads `PRODUCTION_LOGIN_ISSUERS`, not the build's own
+  `ALLOWED_ISSUERS`; until a real issuer is set it is inactive.
 
 ## Observability
 
 - **Server.** The module emits JSON log lines. New code uses `observability::mr_log`;
-  refusals go through `guards::log_reject`. A 60 s `mr_heartbeat` logs the deployed
-  content version and writes nothing. It is the only thing scheduled in a world with
-  nobody connected and it stays on purpose: it is the operator's dead-man's switch for
-  the whole server (the `AlloyIngestStalled` alert reads ten minutes without module log
-  bytes as a stalled log pipeline, and an empty world logs nothing else). Zone ticks
-  and reapers are armed only while something needs them. The module never measures time itself or makes
-  outbound calls; the SpacetimeDB host exposes `/v1/metrics` and writes module logs
-  to files.
+  refusals go through `guards::log_reject`. A 60 s `mr_heartbeat` logs the deployed content
+  version and writes nothing. In a world with nobody connected it is the only schedule but
+  the hourly `host_account_check` tick, which runs only once the owner has named the host's
+  identity, and it stays on purpose: it is the operator's dead-man's switch for the whole
+  server (the `AlloyIngestStalled` alert reads ten minutes without module log bytes as a
+  stalled log pipeline, and an empty world logs nothing else). Zone ticks and reapers are
+  armed only while something needs them. The module never measures time itself and makes no
+  outbound call but the account checks'; the SpacetimeDB host exposes `/v1/metrics` and
+  writes module logs to files.
 - **Stack.** `ops/observability/` is a Docker Compose stack on the host network,
   bound to loopback: Prometheus scrapes the host and node_exporter; Grafana Alloy
   tails the module logs into Loki and receives browser OTLP through Caddy, forwarding
@@ -1153,6 +1283,27 @@ root, so opening one never closes a sibling.
 | Node suites | `ops/observability/**/*.test.mjs`, `scripts/*.test.mjs` | `just test` |
 | Browser e2e | `client/e2e/*.spec.ts` (Playwright, two windows against a real SpacetimeDB and a `dev_reducers` build) | `just e2e`, CI `e2e-shard` jobs (one shard each; `e2e` checks their union is the whole suite) |
 | Nightly | game-core mutation testing (zero missed), server mutation survivor cap, client coverage (report only), criterion perf budgets, republish-over-live-data smoke | `.github/workflows/nightly.yml` |
+
+The module-definition check (`findDefinitionViolations` in
+`scripts/verify-release-reducers.mjs`) reads what `extract-schema` prints and refuses an
+HTTP handler, an HTTP route, a row filter, a procedure not in `ALLOWED_PROCEDURES` (the four
+account checks in `account_checks.rs`), a schedule not in `ALLOWED_SCHEDULES`, at any
+submodule depth, and any section kind it does not know. `just module-definition` (in `just
+ci`) applies it to the default build and `just release-module` to each artefact it makes.
+The reducer census in `privacy_enforcement_tests.rs` refuses a `procedure` attribute outside
+`account_checks.rs`, and that file's `lpw34_7_unstable` module holds that the native test
+binary links with `unstable` on.
+
+The native test host is `server-module/src/native_host_tests.rs`. A procedure runs through
+`Fixture::run_procedure`: the host's `procedure_*` functions put an aborted transaction's rows
+back and answer each HTTP request from a queue the test stubs. `ProcedureContext::sleep_until`
+refuses natively; a native test of a procedure that sleeps adds two more `#[cfg]` attributes to
+the patch and a `procedure_sleep_until` to the host.
+`nh_vendored_crates_are_the_crates_io_release_plus_the_patch` proves each copy under `vendor/`,
+with `vendor/native-host.patch` undone, matches the hashes in `vendor/PRISTINE.sha256`, and that
+every changed line is a `#[cfg]` attribute selecting on wasm what the original selected; each
+SpacetimeDB hop re-records them (`docs/runbooks/spacetimedb-upgrade.md`). CI's `cargo audit`
+skips packages not from crates.io, so the two copies are checked at each hop by hand.
 
 `just ci` is the merge gate: lint, typecheck, test, eval, security, wasm,
 client-typecheck, client-test, client-verify-build, and observability-validate.
