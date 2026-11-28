@@ -69,7 +69,7 @@ All paths are under `client/src/shell/`. The table is in import order.
 | 6 | `screenContext.ts` | What a screen adapter reads: `screenCtx`, what each open bound, the motion preference | `inputState`, `session` |
 | 7 | `commandPort.ts` | The port a lower module runs a command or a stack move through | none |
 | 8 | `notices.ts` | The trade and challenge requests waiting on this client | `views`, `session` |
-| 9 | `battleFrame.ts` | The battle frame: its three views, which one shows, the outcome latch, the tactics memos | `feedback`, `session`, `screenContext`, `commandPort` |
+| 9 | `battleFrame.ts` | The battle frame: its three views, which one shows, the outcome latch, the tactics memos | `inputState`, `feedback`, `session`, `screenContext`, `commandPort` |
 | 10 | `frames.ts` | The context stack and what sits on it: opens, syncs, the mirrored tables, the gates | `views`, `inputState`, `feedback`, `session`, `screenContext`, `battleFrame` |
 | 11 | `movement.ts` | The own character in its zone: the map, the predictor, intents, reconcile, the zone switch, the renderer handle | `config`, `inputState`, `feedback`, `session`, `screenContext`, `battleFrame`, `frames` |
 | 12 | `account.ts` | The session terminal, the claim prompt and Profile's three sections | `config`, `views`, `feedback`, `session`, `frames` |
@@ -99,13 +99,13 @@ registers its first listener. A port member called before the install throws.
 | Lower module | Reaches up for | Today's upward references |
 |---|---|---|
 | `feedback.ts` | whether the main menu is the top frame, and a repaint of the menu | none: `hintOnMenu` asks the host `installHintHost` took (`menuOnTop`), and `paintWorldHint` calls its `repaintMenu` |
-| `commandPort.ts`, for `battleFrame.ts`, `screens.ts`, `menu.ts` and `interact.ts` | `dispatch` and `applyStack` | none: `installCommandPort` took both, and from `main.ts` `buildDeployPanel`, `buildResultsPanel`, `tacticsShellDeps`, `runInteract`, `applyMenuStep` and `closeTradeEditor` call the port's `dispatch`, and `popOverBattleBeforeSwitch` and `showSignInGate` its `applyStack` |
-| `battleFrame.ts` | the stack as the battle frame reads it, and the outcome edge | `popOverBattleBeforeSwitch` and `buildResultsPanel` read `contextStack`; `holdResultsForPlayback` assigns `outcomeShownAtMs` and `autoContinuedAtMs` |
+| `commandPort.ts`, for `battleFrame.ts`, `screens.ts`, `menu.ts` and `interact.ts` | `dispatch` and `applyStack` | none: `installCommandPort` took both. From `battleFrame.ts`, `buildDeployPanel`, `buildResultsPanel` and `tacticsShellDeps` call the port's `dispatch` and `popOverBattleBeforeSwitch` its `applyStack`; from `main.ts`, `runInteract`, `applyMenuStep` and `closeTradeEditor` call its `dispatch` and `showSignInGate` its `applyStack` |
+| `battleFrame.ts` | the stack as the battle frame reads it, and the outcome edge | none: `installBattlePort` took both. `popOverBattleBeforeSwitch` and `buildResultsPanel` read the stack through the port's `stack`, and `holdResultsForPlayback` clears `outcomeShownAtMs` and `autoContinuedAtMs` through its `clearOutcomeEdge` |
 
 The command port is one typed object with two members, declared in a module that imports no
 shell module. The battle port carries what only the battle frame needs. The mount element is
-part of neither: `main()` mounts it at boot, and until then `battleMount` is `undefined` and the
-battle functions return early, as they do in `main.ts`.
+part of neither: `main()` mounts it at boot (`mountBattleFrame`), and until then `battleMount` is
+`undefined` and the battle functions return early.
 
 ## Pumps
 
@@ -231,7 +231,7 @@ listed, and a read a pump receives through its parameter object is a read by `ma
 | `evolutionNoticeOk` | `views.ts` | `interact` | `main()` boot: mount |
 | `deployPanel` | `battleFrame.ts` | `devHooks`, `main` | none |
 | `resultsPanel` | `battleFrame.ts` | `frames`, `devHooks`, `main` | none |
-| `tacticsBattle` | `battleFrame.ts` | `movement`, `commands`, `devHooks`, `main` | none |
+| `tacticsBattle` | `battleFrame.ts` | `commands`, `input`, `devHooks`, `main` | none |
 | `battleMount` | `battleFrame.ts` | none | `main()` boot: mount |
 | `tacticsRulesPort` | `battleFrame.ts` | none | none |
 | `tacticsTuning` | `battleFrame.ts` | none | none |
@@ -240,7 +240,7 @@ listed, and a read a pump receives through its parameter object is a read by `ma
 | `tacticsIngested` | `battleFrame.ts` | none | `resetPredictionState`: reset |
 | `lastTacticsVM` | `battleFrame.ts` | none | `resetPredictionState`: reset |
 | `stillThereAnnouncedFor` | `battleFrame.ts` | none | `resetPredictionState`: reset |
-| `dismissedBattleId` | `battleFrame.ts` | `frames`, `commands` | `closeFrame` continuing the outcome: event; `resetPredictionState`: reset |
+| `dismissedBattleId` | `battleFrame.ts` | `frames` | `closeFrame` continuing the outcome: event; `resetPredictionState`: reset |
 | `battleSynced` | `battleFrame.ts` | `frames` | `resetPredictionState`: reset |
 | `unrenderableReported` | `battleFrame.ts` | none | none |
 | `resultsAwaitDrain` | `battleFrame.ts` | `frames`, `input`, `main` | `resetPredictionState`: reset |
@@ -293,10 +293,6 @@ function takes over.
 
 | Owner | Proposed function | Takes over |
 |---|---|---|
-| `battleFrame.ts` | `installBattlePort` | the battle port |
-| `battleFrame.ts` | `mountBattleFrame` | the `battleMount` assignment at boot |
-| `battleFrame.ts` | `resetBattleFrame` | the battle and tactics lines of `resetPredictionState`, in their position |
-| `battleFrame.ts` | `continueOutcome` | the latch and the hide in `closeFrame`'s battle arm |
 | `frames.ts` | `sweepForReconnect` | the `reconnectSweep` block of `onReconnect` |
 | `frames.ts` | `takeResultsAutoContinue`, `pumpCareReadiness` | the two frame-loop parts that write `autoContinuedAtMs` and `lastCareTickAtMs` |
 | `movement.ts` | `adoptRenderer`, `adoptTelemetry` | the `renderer` and `telemetry` assignments |

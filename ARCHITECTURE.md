@@ -1203,15 +1203,15 @@ bound values, and `screenCtx` reads each of them, the identity and the binding t
 moment of the read. `main.ts` binds at each open (`bindShop`, `bindHealLocation`,
 `bindSocialTab`, `bindMonstersTab`, `bindTradeSession`), clears the first four on a reconnect
 (`unbindForReconnect`), and unbinds the trade session (`unbindTradeSession`) when that session
-closes, on a join and on a reconnect. `main.ts` reads the motion preference in the frame loop
-and hands the tactical shell a getter of it. `shell/notices.ts` owns the trade and challenge
-requests waiting on this client: the request keys the player dismissed, those already announced and
-those answered, and the trade sessions whose editor this client opened. It builds the notice input
-from the dismissed and answered keys, the opened sessions, the store, the identity and the error
-and evolution views (`noticeInput`), and it gives the requests still waiting on an answer
-(`livePending`) and the line a request reads in the banner, the sheet and the announcement
-(`requestLine`). Only that module changes the four sets, and it exports the announced and answered
-keys as read-only views.
+closes, on a join and on a reconnect. `main.ts` reads the motion preference in the frame loop,
+and `shell/battleFrame.ts` hands the tactical shell a getter of it. `shell/notices.ts` owns the
+trade and challenge requests waiting on this client: the request keys the player dismissed, those
+already announced and those answered, and the trade sessions whose editor this client opened. It
+builds the notice input from the dismissed and answered keys, the opened sessions, the store, the
+identity and the error and evolution views (`noticeInput`), and it gives the requests still waiting
+on an answer (`livePending`) and the line a request reads in the banner, the sheet and the
+announcement (`requestLine`). Only that module changes the four sets, and it exports the announced
+and answered keys as read-only views.
 `main.ts` calls its owner functions:
 - `dispatch` marks a request answered when it runs the answer (`markAnswered`), and a rejected
   answer releases it (`releaseAnswered`);
@@ -1224,15 +1224,36 @@ keys as read-only views.
 
 The module registers nothing.
 
+`shell/battleFrame.ts` owns the battle frame: the three views that can own it (the deploy panel
+of a Deploying battle, the tactical shell of an Active one and the results panel of a Finished
+one, each built lazily on the element `main()` mounts), which one shows, the outcome latch, the
+tactics memos and the server-time estimate the battle countdowns read. `refreshBattle` decides
+the frame on each batch, and the frame loop pumps the countdown and the PvP clock on the estimate
+(`pumpStillThere`, `pumpClock`). The views' handlers run commands through the command port. Only
+that module assigns its state; `main.ts` reads the three views, the results wait, the latch and
+the estimate through their imports, and calls its owner functions:
+- `main()` mounts the views' element at boot (`mountBattleFrame`);
+- `resetPredictionState` resets the battle and tactics state, on a reconnect and on a zone switch
+  (`resetBattleFrame`);
+- `closeFrame` continues a terminal outcome: it latches the battle and hides every battle view
+  (`continueOutcome`);
+- a batch listener registered after `refreshBattle`'s feeds the shown battle's clock rows to the
+  estimate (`feedServerClock`).
+
+What the module needs from `main.ts`, the context stack and the outcome edge, comes through its
+port. Its module scope registers nothing and writes nothing to the document.
+
 A lower shell module reaches upward through a port `main.ts` installs, or through the parameter
-object of a frame-loop pump. Three ports are installed: the world hint's host (`installHintHost`,
-`shell/feedback.ts`), the Gamepad API's fault sink (`installPadFaultSink`, `shell/inputState.ts`),
-which logs to the console until installed, and the command port (`installCommandPort`,
-`shell/commandPort.ts`), which holds `dispatch` and `applyStack` for the callers the module map puts
-below the dispatcher: the battle views' handlers, `popOverBattleBeforeSwitch`, `closeTradeEditor`,
-`runInteract`, `applyMenuStep` and `showSignInGate` call them through `commandPort`. That module
-imports types only and registers nothing. The battle frame's own port, for the stack as it reads
-it and the outcome edge, is planned in `docs/refactors/client-shell.md`. Every
+object of a frame-loop pump. Four ports are installed. The world hint's host (`installHintHost`,
+`shell/feedback.ts`) and the Gamepad API's fault sink (`installPadFaultSink`,
+`shell/inputState.ts`), which logs to the console until installed, are two. The command port
+(`installCommandPort`, `shell/commandPort.ts`) holds `dispatch` and `applyStack` for the callers
+the module map puts below the dispatcher: the battle views' handlers,
+`popOverBattleBeforeSwitch`, `closeTradeEditor`, `runInteract`, `applyMenuStep` and
+`showSignInGate` call them through `commandPort`. Its module imports types only and registers
+nothing. The battle port (`installBattlePort`, `shell/battleFrame.ts`) gives the battle frame the
+context stack as it stands, and clears the outcome edge while the results wait for the shell's
+playback. Every
 `client/src/main.*.test.ts` suite resets the module registry and imports `./main`. Of the batch
 listeners `main.ts` registers, `reconcileStack` runs ahead of every listener that shows the battle
 or the dialogue, and the stack sync and the adapters' observe run last.
