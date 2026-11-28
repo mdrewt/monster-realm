@@ -8,7 +8,8 @@ lists, and the duplication found across `client/src/`. Section 4 is the one orde
 extractions, each one slice. The decision and what it rules out are in `docs/DECISIONS.md`
 ("The client reaches its host through ports cut where a second host needs one").
 
-Everything here is measured at commit `192b8b3d`. "Non-test file" means a `.ts` file under
+Everything here is measured at commit `192b8b3d`, except a row an extraction has rewritten, which
+describes the code after that extraction. "Non-test file" means a `.ts` file under
 `client/src` that is not a `*.test.ts`, not a `*.d.ts` and not under `module_bindings/`: 198
 files, about 51,700 lines.
 
@@ -54,8 +55,7 @@ owns it.
 | `client/src/net/connection.ts` | `connect` | `globalThis` handed as the host at ten call sites (`createAuthTokenGate`, `createOidcClient`, `writeAuthKind`, `wasEverAuthenticated` twice, `claimCode.hasUnconsumed` twice, `.read`, `.mint`, `.clear`) | credential storage |
 | `client/src/net/connection.ts` | `connect` (`beginOidcRedirect`) | `globalThis` read for `location.assign` | sign-in navigation |
 | `client/src/main.ts` | `applyClaim`, `openProfile` | `globalThis` handed to `claimCode.clear`, `.hasSeenFirstRunNudge`, `.markFirstRunNudgeSeen` | credential storage |
-| `client/src/main.ts` | `applyMenuStep` | `window.` (`window.open`, the Steam store entry) | hand-off |
-| `client/src/main.ts` | `downloadExportBundle` | `createObjectURL`, `Blob`, a hidden `<a download>`, `revokeObjectURL` | hand-off |
+| `client/src/platform/handoff.ts` | `openExternal`, `saveFile` | `window.` (`window.open`, for the Steam store entry `applyMenuStep` passes); `createObjectURL`, `Blob`, a hidden `<a download>`, `revokeObjectURL` (for the personal-data export `downloadExportBundle` passes) | hand-off |
 | `client/src/main.ts` | `downloadBugBundle` | `createObjectURL`, `Blob`, a hidden `<a download>`, `revokeObjectURL` | hand-off |
 | `client/src/render/resizeWiring.ts` | `installResizeHandler` | `innerWidth`, `innerHeight`, `devicePixelRatio`, the `resize` event and the root style of the injected `ResizeWindow` | window size |
 | `client/src/render/world.ts` | `WorldRenderer` (`init`) | `window.` (`innerWidth`, `innerHeight`, `devicePixelRatio`) | window size |
@@ -99,7 +99,7 @@ about a shell comes from its documentation unless it says "unverified"; none was
 | device storage | `StorageLike` in `client/src/input/bindingStore.ts`, resolved by `browserStorage` | `window.localStorage` | same web API; the shell registers its page scheme as standard so Web Storage is enabled | same web API; persistence across launches under `tauri://localhost` is unverified |
 | credential storage | `TokenStorageHost` (`client/src/net/authToken.ts`), `ClaimCodeHost` (`client/src/net/claimCode.ts`) | `sessionStorage` and `localStorage` of `globalThis`, by target kind | same web API | same web API |
 | sign-in navigation | `OidcHost` in `client/src/net/oidc.ts`; the credential port of 1.4 replaces it under a shell | `location.assign` to the issuer, the return leg read from `location` and cleaned with `history.replaceState` | nothing: the shell refuses navigation off its origin and hands a credential instead (1.4) | nothing: the same |
-| hand-off | `client/src/platform/handoff.ts` (extraction 1): `openExternal`, `saveFile` | `window.open(url, '_blank', 'noopener')`; a blob URL on a hidden `<a download>` | the bridge's `openExternal` (the system browser or the Steam overlay's store page) and `saveFile` (a save dialog, then a write); where the shell supplies neither, `window.open` and the blob download run and its own handlers decide (`setWindowOpenHandler`, `will-download`) | the bridge's `openExternal` (the opener plugin or the overlay) and `saveFile` (a save dialog, then a write); a blob download is reported to fail under WKWebView, so `saveFile` is required there |
+| hand-off | `client/src/platform/handoff.ts`: `openExternal`, `saveFile` | `window.open(url, '_blank', 'noopener')`; a blob URL on a hidden `<a download>` | the bridge's `openExternal` (the system browser or the Steam overlay's store page) and `saveFile` (a save dialog, then a write); where the shell supplies neither, `window.open` and the blob download run and its own handlers decide (`setWindowOpenHandler`, `will-download`) | the bridge's `openExternal` (the opener plugin or the overlay) and `saveFile` (a save dialog, then a write); a blob download is reported to fail under WKWebView, so `saveFile` is required there |
 | window size | `ResizeWindow` in `client/src/render/resizeWiring.ts` | `window` | same web API | same web API |
 | visibility and page life | `main.ts` (`blur`, `visibilitychange`) and `connect` in `client/src/net/connection.ts` (`pagehide`, `pageshow`) register the DOM events; no port | `blur`, `visibilitychange`, `pagehide`, `pageshow` | same web API, unverified; the overlay signal of 1.4 is separate | same web API, unverified |
 | motion preference | `MatchMediaHost` in `client/src/render/motionPreference.ts` | `window.matchMedia` | same web API | same web API |
@@ -295,9 +295,9 @@ none is dropped.
 | 18 | `shell/devHooks.ts` | kept; takes `MrSessionOffer`, `mrSessionOffer` | 15 |
 
 All twelve keep their relative order. They are reordered only against the new work: extractions
-1 to 3 of section 4 land first, because 1 gives `account.ts` and `menu.ts` the hand-off port
-their moved code calls, 2 gives `account.ts` the issuer its sign-in offer is built from, and 3
-removes the cycles.
+2 and 3 of section 4 land first, because 2 gives `account.ts` the issuer its sign-in offer is
+built from and 3 removes the cycles. The code that moves into `account.ts` and `menu.ts` calls the
+hand-off port, `platform/handoff.ts`.
 
 ## 3. Duplication and structure across `client/src/`
 
@@ -322,7 +322,7 @@ finding below was checked against the code again before it was written down.
 | D5 | twelve identical insert, update and delete registrations | `net/connection.ts` (`wireTables`) | extraction 20: one local helper, the registration order unchanged |
 | D6 | the battle panels' element helper (four copies), root and title (three), countdown line (two) | `tactics/clock.ts`, `tactics/hud.ts`, `tactics/deployPanel.ts`, `tactics/results.ts`, `tactics/tacticsBattle.ts` | extraction 21: `tactics/panelParts.ts` |
 | D7 | store-to-view-model mappers in the wasm port's file | `tactics/wasm.ts` (`shellKind`, `activeUnitOf`, `statusTagOf`, `intentKind`, `overlaySets`, `unitRowOf`) | extraction 22: `tactics/storeMap.ts` |
-| D8 | the Blob, object URL and hidden anchor of a download, twice | `main.ts` (`downloadExportBundle`, `downloadBugBundle`) | extraction 1 takes the export's steps as `saveFile`; the bug bundle differs in its cleanup on a failure and joins through finding F3 |
+| D8 | the Blob, object URL and hidden anchor of a download, twice | `platform/handoff.ts` (`saveFile`, which the export calls), `main.ts` (`downloadBugBundle`) | `saveFile` in `platform/handoff.ts` holds the export's steps; the bug bundle differs in its cleanup on a failure and joins through finding F3 |
 | D9 | `globalThis` handed as the host at ten call sites | `net/connection.ts` (`connect`) | not worth moving: one local alias saves ten identical words and changes no dependency; `connect` takes a host option when a shell supplies a credential |
 | D10 | "if the view is open, refresh it" batch listeners with the same inner `try` | `main.ts` (quest log, heal, shop, leaderboard, challenges) | not worth moving: extraction 9 moves them whole; their guards and log tags differ, and a helper saves under thirty lines |
 | D11 | SDK row and store row types mirror each other | `net/rowConvert.ts`, `net/store.ts`, `ui/exportAssembly.ts` | not worth moving: they are the two sides of the conversion boundary and differ at identity, enums and essence |
@@ -357,7 +357,6 @@ fixed in the slice. The slice for a row deletes that row. The symbol lists are m
 
 | # | Module | Kind | Tier | Creates | Covering tests | Feature change |
 |---|---|---|---|---|---|---|
-| 1 | hand-off port | interface | hard | `client/src/platform/handoff.ts` | `client/src/main.exportTransport.test.ts`, `client/src/main.menu.test.ts`, `client/src/main.signInGate.test.ts` | none added, none removed |
 | 2 | sign-in constants | move | routine | nothing | `client/src/shell/config.test.ts`, `client/src/main.signInGate.test.ts`, `client/src/main.targetKindGate.test.ts` | none added, none removed |
 | 3 | command port | interface | hard | `client/src/shell/commandPort.ts` | `client/src/main.dispatch.test.ts`, `client/src/main.menu.test.ts`, `client/src/main.signInGate.test.ts`, `client/src/main.social.test.ts` | none added, none removed |
 | 4 | notices | interface | hard | `client/src/shell/notices.ts` | `client/src/main.notices.test.ts`, `client/src/main.noticesRt.test.ts`, `client/src/main.reconnectStack.test.ts` | none added, none removed |
@@ -390,19 +389,6 @@ resolver gains the module when it resolves a string; this file;
 set. A row that moves boot wiring or a DEV hook (5, 14, 15) runs the full end-to-end suite as
 well.
 
-1. `client/src/platform/handoff.ts` is created with two functions. `openExternal(url)` holds
-   `applyMenuStep`'s `window.open(url, '_blank', 'noopener')`. `saveFile(file, onBlocked)` takes
-   the file (its name, its MIME type and its text) and what to do when the host blocks the save;
-   it holds `downloadExportBundle`'s steps from the `Blob` to the click, runs `onBlocked` where
-   the `catch` runs today, and removes the anchor and revokes the URL in its `finally`, so the
-   order of those steps is today's. `applyMenuStep` and `downloadExportBundle` call them; the
-   export keeps its completeness guard and passes its static console line and its blocked-download
-   message as `onBlocked`. It computes the file's name before the call, where today that sits
-   inside the `try`: `exportBundleFilename` formats a request id and a clock reading and throws on
-   neither. `downloadBugBundle` is not touched (finding F3). Touches:
-   `client/src/platform/handoff.ts`, `client/src/platform/handoff.test.ts`, `client/src/main.ts`,
-   the `client/src/main.*.test.ts` family, this file and `ARCHITECTURE.md`. Pins: none; the
-   whole-tree i18n scans cover the new file.
 2. `client/src/shell/config.ts` takes `OPERATED_BY_US`, `OIDC_ISSUER`, `SIGN_IN_MODE` and
    `ACCOUNT_REQUIRED`. They are constants with no writer, resolved from `TARGET_KIND` and one
    build value; `config.ts` gains one type import (`SignInMode`) and nothing at run time.

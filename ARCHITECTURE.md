@@ -1147,8 +1147,13 @@ such capability has one owner, listed there by call site. Most are web APIs ever
 reached through a narrow type the real global satisfies (the storage hosts, the pad read, the key
 event, the media query, the window size) or a DOM listener `main.ts` or `connect` registers; a
 capability a second host must provide differently gets a port under `client/src/platform/`, whose
-default is the browser's code; the plan's first extraction creates the first of them.
-`shell/config.ts` holds the values fixed for the session,
+default is the browser's code. `platform/handoff.ts` is the port for what the client hands to the
+operating system: `openExternal(url)` opens an address in a new browsing context with no handle
+back to the page (the sign-in gate's store row), and `saveFile(file, onBlocked)` saves a file the
+client made, through a blob URL on a hidden download anchor (the personal-data export), runs
+`onBlocked` when the host blocks a step, and releases the anchor and the URL whatever happened. It
+imports no client module and registers nothing. The bug bundle saves through its own blob
+download in `main.ts`. `shell/config.ts` holds the values fixed for the session,
 set at import: the connection target (`URI`, `DB`, `TARGET_KIND`, resolved from the shell
 document on the page global; a production build throws at import when the document is missing
 or refused), the dev-log level and its send and fate
