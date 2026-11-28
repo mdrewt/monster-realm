@@ -257,8 +257,8 @@ lines name 213 symbols, and 208 of them are declared in `main.ts`.
 - **Three call cycles cross the module map.** `applyMenuStep` calls `dispatch` and
   `showSignInGate` calls `applyStack` (both menu); `runInteract` (interact) calls `dispatch`;
   `closeTradeEditor` (screens) calls `dispatch`. `commands.ts` sits above all three in the map
-  and imports them; the command port (2.2) cuts all three. The battle port serves
-  `battleFrame.ts` alone.
+  and imports them. Their callers reach `dispatch` and `applyStack` through the command port
+  (2.2). The battle port serves `battleFrame.ts` alone.
 - **One lower module writes a higher one's bindings.** `holdResultsForPlayback` (battle frame)
   assigns `outcomeShownAtMs` and `autoContinuedAtMs`, which `frames.ts` owns.
 
@@ -270,10 +270,10 @@ object with those two members, installed once by `main.ts` before its first list
 and throwing until then, as the hint host does. `battleFrame.ts`, `screens.ts`, `menu.ts` and
 `interact.ts` call it. The battle port keeps what only the battle frame needs from the stack:
 the read of `contextStack` in `popOverBattleBeforeSwitch` and `buildResultsPanel`, and a function
-that clears the outcome edge for `holdResultsForPlayback`. Its eight callers (`buildDeployPanel`,
-`buildResultsPanel`, `tacticsShellDeps`, `runInteract`, `applyMenuStep`, `closeTradeEditor`,
-`popOverBattleBeforeSwitch` and `showSignInGate`) call it from `main.ts`, so the extractions that
-take them into those four modules are moves.
+that clears the outcome edge for `holdResultsForPlayback`. The command port's eight callers
+(`buildDeployPanel`, `buildResultsPanel`, `tacticsShellDeps`, `runInteract`, `applyMenuStep`,
+`closeTradeEditor`, `popOverBattleBeforeSwitch` and `showSignInGate`) call it from `main.ts`, so
+moving them into those four modules changes no call to `dispatch` or `applyStack`.
 
 ### 2.3 Disposition of extractions 7 to 18
 
@@ -298,8 +298,9 @@ none is dropped.
 | 17 | `shell/input.ts` | kept; takes the pad poll | 14 |
 | 18 | `shell/devHooks.ts` | kept; takes `MrSessionOffer`, `mrSessionOffer` | 15 |
 
-All twelve keep their relative order. The command port (2.2) removes the cycles, and the issuer
-`account.ts` builds the sign-in offer from is in `shell/config.ts`. The code that moves into
+All twelve keep their relative order. The callers in 2.1's three cycles reach `dispatch` and
+`applyStack` through the command port (2.2), and the issuer `account.ts` builds the sign-in offer
+from is in `shell/config.ts`. The code that moves into
 `account.ts` and `menu.ts` calls the hand-off port, `platform/handoff.ts`.
 
 ## 3. Duplication and structure across `client/src/`

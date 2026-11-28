@@ -52,7 +52,8 @@ extractions still to make, with the symbols each takes, are section 4 of
    `shell/` nor `main.ts`.
 8. **Views get their handlers from the composition root.** `main()` constructs each boot-built
    view with its handler closures and hands the instance to `shell/views.ts`. The three battle
-   views are built lazily inside `shell/battleFrame.ts` with the handlers its port carries.
+   views are built lazily inside `shell/battleFrame.ts`; their handlers run commands through the
+   command port.
 
 ## Module map
 

@@ -1,8 +1,9 @@
 // shell/commandPort — the port through which code reaches `dispatch` and `applyStack`, the
 // dispatcher's run of one command and its stack move, without importing the module that holds
 // them. `main.ts` installs the two once (`installCommandPort`), at its own module scope, before it
-// registers its first listener; until then each member throws. The module imports types only,
-// registers no listener and writes nothing to the document.
+// registers its first listener; until then each member throws. A caller reads `commandPort` at
+// the call: a copy taken at module scope keeps the throwing default. The module imports types
+// only, registers no listener and writes nothing to the document.
 
 import type { OutcomeLine } from '../ui/boxView';
 import type { Stack } from '../ui/contextStack';

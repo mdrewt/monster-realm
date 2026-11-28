@@ -1,7 +1,8 @@
 // shell/commandPort — the port main.ts installs so shell modules below it reach `dispatch` and
-// `applyStack`. Each test imports the module afresh (vi.resetModules + a dynamic import), so the
-// installed port never leaks between tests, and installs a fake port of plain `vi.fn` members:
-// the suite checks the uninstalled port's refusal, the install, and each member's pass-through.
+// `applyStack`. Each test imports the module afresh (vi.resetModules + a dynamic import), so no
+// installed port leaks between tests. The suite checks that the uninstalled port refuses, that the
+// install makes `commandPort` the given port, and that each member passes its arguments, its
+// return value and a synchronous throw through, using fake ports built from `vi.fn`.
 import { afterEach, describe, expect, it, type Mock, vi } from 'vitest';
 import type { OutcomeLine } from '../ui/boxView';
 import type { Stack } from '../ui/contextStack';

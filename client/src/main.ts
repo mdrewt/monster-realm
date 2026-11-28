@@ -517,8 +517,8 @@ applyTextStep(document.documentElement, textStep);
 // The hint host `shell/feedback.ts` reaches up through, installed before the first listener
 // registers: whether the main menu is the top frame, and a repaint of it.
 installHintHost({ menuOnTop: () => menuPlace() === 'top', repaintMenu: renderMenu });
-// The command port `shell/commandPort.ts` holds, installed beside it: the dispatcher's run of one
-// command and its stack move, for the callers the module map puts below the dispatcher.
+// The command port (`shell/commandPort.ts`), installed beside the hint host: `dispatch` and
+// `applyStack`, for the callers the shell's module map puts below the dispatcher.
 installCommandPort({ dispatch, applyStack });
 // A fault of the Gamepad API (the pad source reports its first one only) goes to the error ring,
 // tagged so the F9 bundle tells it from a frame or handler throw.
