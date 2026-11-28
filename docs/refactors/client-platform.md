@@ -238,10 +238,10 @@ lines name 213 symbols, and 208 of them are declared in `main.ts`.
 - **Five named symbols are not declared in `main.ts`:** `openPropose` (extraction 12) and
   `TRADE_ANSWER`, `TRADE_SETTLE`, `TRADE_CANCEL`, `TRADE_PROPOSE` (extraction 16). Section 4
   leaves them out.
-- **42 declarations are named by no line and are not in "What `main.ts` keeps".** Section 4
-  gives 41 of them an owner: the sign-in constants (`OPERATED_BY_US`, `OIDC_ISSUER`, `SIGN_IN_MODE`,
-  `SIGN_IN_OFFER`, `ACCOUNT_REQUIRED`); the trade editor (`openedTradeSessions`,
-  `pendingTradeOpen`, `TRADE_OPEN_WAIT_MS`, `knownSessionIds`, `resetTradeSessionState`,
+- **42 declarations are named by no line and are not in "What `main.ts` keeps".** 41 of them
+  have an owner: `shell/config.ts` holds four sign-in constants (`OPERATED_BY_US`, `OIDC_ISSUER`,
+  `SIGN_IN_MODE`, `ACCOUNT_REQUIRED`), and section 4 gives the rest one: `SIGN_IN_OFFER`; the
+  trade editor (`openedTradeSessions`, `pendingTradeOpen`, `TRADE_OPEN_WAIT_MS`, `knownSessionIds`, `resetTradeSessionState`,
   `openTradeEditor`, `closeTradeEditor`, `tradeOpenExpired`); the sign-in gate (`signInGate`,
   `saidGateLine`, `signInGateView`, `showSignInGate`, `lowerSignInGate`, `applySignInGate`,
   `holdSignInGate`); the pad poll (`TerminalPhase`, `terminalPhase`, `padPhase`,
@@ -295,9 +295,9 @@ none is dropped.
 | 17 | `shell/input.ts` | kept; takes the pad poll | 14 |
 | 18 | `shell/devHooks.ts` | kept; takes `MrSessionOffer`, `mrSessionOffer` | 15 |
 
-All twelve keep their relative order. They are reordered only against the new work: extractions
-2 and 3 of section 4 land first, because 2 gives `account.ts` the issuer its sign-in offer is
-built from and 3 removes the cycles. The code that moves into `account.ts` and `menu.ts` calls the
+All twelve keep their relative order. They are reordered only against the new work: extraction
+3 of section 4 lands first, because it removes the cycles; the issuer `account.ts` builds the
+sign-in offer from is in `shell/config.ts`. The code that moves into `account.ts` and `menu.ts` calls the
 hand-off port, `platform/handoff.ts`.
 
 ## 3. Duplication and structure across `client/src/`

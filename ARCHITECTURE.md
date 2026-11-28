@@ -1159,7 +1159,8 @@ document on the page global; a production build throws at import when the docume
 or refused), the dev-log level and its send and fate
 loggers, the sign-in constants (`OPERATED_BY_US`, `OIDC_ISSUER`, `SIGN_IN_MODE`,
 `ACCOUNT_REQUIRED`, resolved from `TARGET_KIND` and the build's `VITE_MR_OIDC_ISSUER`), the
-zone id, the game-core constants read from the wasm exports, and the wasm-ready mark. It writes nothing to the document and registers nothing. `shell/views.ts` owns the handles
+zone id, the game-core constants read from the wasm exports, and the wasm-ready mark. It writes
+nothing to the document and registers nothing. `shell/views.ts` owns the handles
 of the views built at boot (the screens, the Profile sections, the session overlay, the
 evolution notice banner, the error overlay and the hint bar) and the Controls saved-line
 function mounted with Controls. `main()` constructs each view with its handlers and mounts it
