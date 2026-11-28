@@ -5,12 +5,13 @@
 // each open frame, the overlay gate (`overlayVerdict`), the movement gate (`movementGate`), the
 // outcome edge that A's grace and the results auto-advance read, and the focus each close leaves.
 //
-// Only this module assigns the stack and its latches; every other module reads them through its
-// imports. `main.ts` writes them through four owner functions: the reconnect sweep
-// (`sweepForReconnect`), the frame loop's results auto-advance (`takeResultsAutoContinue`) and
-// care-readiness tick (`pumpCareReadiness`), and the outcome-edge clear (`clearOutcomeEdge`) it
-// hands the battle port. Its module scope builds the three tables, the open registry and the
-// screen host; it registers nothing, writes nothing to the document and resolves no string.
+// Only this module assigns the stack and its latches. `main.ts` changes them only by calling it:
+// the opens and the syncs, and three owner functions, the reconnect sweep (`sweepForReconnect`)
+// and the frame loop's results auto-advance (`takeResultsAutoContinue`) and care-readiness tick
+// (`pumpCareReadiness`). `shell/battleFrame.ts` reads the stack and clears the outcome edge
+// through the battle port, whose clear `main.ts` installs as this module's `clearOutcomeEdge`. Its
+// module scope builds the three tables, the open registry and the screen host; it registers
+// nothing, writes nothing to the document and resolves no string.
 
 import { CAPS } from '../tactics/presentation';
 import { decideBattleOverlay } from '../ui/battleModel';
@@ -401,9 +402,9 @@ function judgeCloseFocus(): void {
   syncedTop = top;
 }
 
-/** Null the outcome edge, so A's grace and the results auto-advance start again at the next sync
- *  that sees the outcome on top. The battle port's `clearOutcomeEdge`: the results wait for the
- *  tactical shell's playback. */
+/** Null the outcome edge, so A's grace and the results auto-advance start again at the first sync
+ *  that sees the outcome on top with no results waiting for the playback. The battle port's
+ *  `clearOutcomeEdge`: the results wait for the tactical shell's playback. */
 export function clearOutcomeEdge(): void {
   outcomeShownAtMs = null;
   autoContinuedAtMs = null;
@@ -437,13 +438,14 @@ export function sweepForReconnect(): void {
 // qf-3: the Monsters sheet's Care readiness follows the WALL clock, which no batch or button moves,
 // so while the box frame is open the frame loop re-observes the stack about once a second (the
 // host's same-object contract keeps a still readiness paint-free; a cooldown that just elapsed
-// repaints the row enabled with nobody pressing anything). The per-batch observe in `main.ts`'s last
-// batch listener stays the main path; this tick only closes the idle gap.
+// repaints the row enabled with nobody pressing anything). The per-batch observe in `main.ts`'s
+// last batch listener stays the main path; this tick only closes the idle gap.
 const CARE_READINESS_TICK_MS = 1000;
 let lastCareTickAtMs = 0;
 
 /** The frame loop's care-readiness tick at `now`: while the box frame is on the stack, the open
- *  frames' adapters observe it again once `CARE_READINESS_TICK_MS` has passed since the last tick. */
+ *  frames' adapters observe it again once `CARE_READINESS_TICK_MS` has passed since the last
+ *  tick. */
 export function pumpCareReadiness(now: number): void {
   if (now - lastCareTickAtMs >= CARE_READINESS_TICK_MS && upperIds().includes('boxView')) {
     lastCareTickAtMs = now;

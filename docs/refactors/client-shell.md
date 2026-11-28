@@ -138,8 +138,8 @@ listed, and a read a pump receives through its parameter object is a read by `ma
 | Binding | Owner | Readers | Outside writers |
 |---|---|---|---|
 | `contextStack` | `frames.ts` | `screens`, `menu`, `commands`, `input`, `devHooks`, `main`; `battleFrame` through its port | the `onReconnect` sweep: reset |
-| `outcomeShownAtMs` | `frames.ts` | `input` | `battleFrame` through its port's `clearOutcomeEdge`: event |
-| `autoContinuedAtMs` | `frames.ts` | none | the frame loop's results auto-advance: pump; `battleFrame` through its port's `clearOutcomeEdge`: event |
+| `outcomeShownAtMs` | `frames.ts` | `input` | the battle port's outcome-edge clear, which `main.ts` installs and `battleFrame` calls: event |
+| `autoContinuedAtMs` | `frames.ts` | none | the frame loop's results auto-advance: pump; the battle port's outcome-edge clear, which `main.ts` installs and `battleFrame` calls: event |
 | `syncedTop` | `frames.ts` | none | none |
 | `closeLeftFocusAdrift` | `frames.ts` | `main` | none |
 | `lastCareTickAtMs` | `frames.ts` | none | the frame loop's care-readiness tick: pump |

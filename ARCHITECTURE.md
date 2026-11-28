@@ -1194,10 +1194,10 @@ first join, `noteHydrated` once the store holds the applied snapshot, and `armEm
 state, on a reconnect and on a zone switch. `main.ts` registers the two latch steps as batch
 listeners, `stepBattleEmit` and then `stepRankedEmit`; each pushes the event its step returns
 onto the session event ring. `shell/screenContext.ts` owns what a screen adapter reads: the one
-`screenCtx` that `main.ts` and `shell/frames.ts` pass the screen host for every adapter (the store,
-the identity, the binding table, the frame clock and the wall clock, what each open bound, and the
-reduced-motion bit); the shop, the heal location, the Social tab, the Monsters tab and the trade session the
-last open of each bound; and the one motion preference, built at import through
+`screenCtx` that `main.ts` and `shell/frames.ts` pass the screen host for every adapter (the
+store, the identity, the binding table, the frame clock and the wall clock, what each open bound,
+and the reduced-motion bit); the shop, the heal location, the Social tab, the Monsters tab and the
+trade session the last open of each bound; and the one motion preference, built at import through
 `render/motionPreference.ts`, the client's one `matchMedia` read. Only that module assigns the
 bound values, and `screenCtx` reads each of them, the identity and the binding table at the
 moment of the read. `main.ts` binds at each open (`bindShop`, `bindHealLocation`,
@@ -1248,13 +1248,17 @@ writes nothing to the document.
 the syncs (`syncStack`, and `reconcileStack` on each batch), the three mirrored-frame tables, the
 screen host that paints each open frame, the overlay and movement gates (`overlayVerdict`,
 `movementGate`), the outcome edge that A's grace and the results auto-advance read, and the focus
-a close leaves. Only that module assigns the stack and its latches; `main.ts` reads the stack, the
-outcome edge and the focus latch through their imports, and calls its owner functions:
+a close leaves. Only that module assigns the stack and its latches. `main.ts` reads the stack, the
+outcome edge and the focus latch through their imports, changes them only through the module's
+opens and syncs, and calls its owner functions:
 - `onReconnect` sweeps the stack (`sweepForReconnect`);
 - the frame loop takes the results auto-advance once per shown edge (`takeResultsAutoContinue`;
-  `main()` then pops the outcome) and lets the box frame's adapter observe the care readiness
-  about once a second (`pumpCareReadiness`);
-- the battle port's outcome-edge clear is the module's `clearOutcomeEdge`.
+  `main()` then pops the outcome), and while the box frame is on the stack it lets the open
+  frames' adapters observe the stack again about once a second, so the care readiness repaints
+  (`pumpCareReadiness`).
+
+`main.ts` installs the module's `clearOutcomeEdge` as the battle port's outcome-edge clear, which
+`shell/battleFrame.ts` calls while the results wait for the playback.
 
 Its module scope builds the three tables, the open registry and the screen host; it registers
 nothing and writes nothing to the document.
@@ -1470,8 +1474,8 @@ a hold with `Step` in the active direction only after it has been held 150 ms
 (`HOLD_COMMIT_MS`), only when the predictor has no outstanding steps and no sent input is still
 owed, and only while `movementGate()` in `shell/frames.ts` passes: `movementEnabled`
 (`ui/contextStack.ts`: the world base with no frame above it and the session gate open) and no
-world sheet open. A hold
-from another facing therefore turns, waits for the row that drains the `Face`, then walks. The
+world sheet open. A hold from another facing therefore turns, waits for the row that drains the
+`Face`, then walks. The
 reconcile listener re-sends the held direction behind the same checks after a server correction.
 Every push of a frame, and every change of base kind, clears the held set. The keyboard source
 drops OS key-repeat (`e.repeat`), and the router (`input/router.ts`) counts each D-pad button's
@@ -1676,8 +1680,8 @@ pushes the frame and then shows its view; `contextStep`'s same-id push no-op is 
 trade, challenge and leaderboard panels are the one `social` frame. The visibility mirror sees
 only `MIRRORED_IDS` (`ui/contextStack.ts`): `battleView`, which presents the battle base and the
 terminal outcome, and `dialogueView`. A player view that closes itself has its frame popped at the
-next sync (`hiddenPops`). The module's three tables (probes, hide handles, lent views:
-`overlayProbes`, `overlayHandles`, `screenViews`) keep rows only for the mirrored ids.
+next sync (`hiddenPops`). The three tables in `shell/frames.ts` (probes, hide handles, lent
+views: `overlayProbes`, `overlayHandles`, `screenViews`) keep rows only for the mirrored ids.
 
 **Hold edge.** A frame's `RouteContext.hold` (`input/router.ts`) lists its hold-capable buttons,
 and `HOLD_MS` is 500. A hold reaches the adapter as `NavInput.hold` (`ui/nav.ts`); `resetRepeat` and

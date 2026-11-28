@@ -2,8 +2,9 @@
 // shell/frames — the context stack, the overlay tables, the gates and the four owner functions,
 // reached through the module. Each test imports it afresh (vi.resetModules + dynamic imports), with
 // every shell module it reads loaded in the same registry, so the store, the views, the battle frame
-// and the input devices are the instances the module reads. The hint host and the battle port are
-// installed as the boot installs them. The real client-wasm rules answer every rules call.
+// and the input devices are the instances the module reads. Every test installs the hint host as the
+// boot does; the tests that show a battle also install the command and battle ports the way
+// `main.ts` does (`boot`). The real client-wasm rules answer every rules call.
 import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 import type {
   StoreBattle,
