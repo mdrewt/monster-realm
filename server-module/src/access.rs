@@ -31,10 +31,11 @@
 //! `cancel_account_deletion`, `request_data_export`, `start_guest_claim` and
 //! `complete_guest_claim`), which open with [`require_rule_admits`], the access rule alone; the
 //! owner-only reducers, which make their owner check; and `unbind_world_account`, which makes
-//! no check. The connect reducer and the account-check procedures ask nothing about ownership:
-//! an identity becomes entitled by connecting and checking its account in. The check reads what
-//! is stored when the call runs, the connection's token and the caller's `world_account` row,
-//! so an identity that has joined is refused from the first call that finds it not entitled.
+//! neither check. The connect reducer and the account-check procedures ask nothing about
+//! ownership: where a world checks accounts itself, an identity becomes entitled by connecting
+//! and checking its account in. The check reads what is stored when the call runs, the
+//! connection's token and the caller's `world_account` row, so an identity that has joined is
+//! refused from the first call that finds it not entitled.
 //!
 //! An identity that is not admitted can call nothing but that unbind, so admission is granted
 //! by calls only the owner can make: [`set_world_access`] sets the rule and admits identities
