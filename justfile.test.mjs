@@ -94,9 +94,17 @@ function runPublish({ publishExit = 0, callExit = 0 } = {}) {
 }
 
 // The whole argument list, exactly: the database named, the data kept (no `-c` /
-// `--delete-data` in any spelling), the CLI's default server and identity.
+// `--delete-data` in any spelling), the CLI's default server and identity, and the build told to
+// enable `open_join`: the module the dev loop publishes admits players with no account only
+// because the publish names that feature.
 function assertPublishOf(args) {
-  assert.deepEqual(args, ['publish', '--module-path', 'server-module', DB]);
+  assert.deepEqual(args, [
+    'publish',
+    '--module-path',
+    'server-module',
+    '--build-options=--features open_join',
+    DB,
+  ]);
 }
 
 test('after a publish that succeeds, just publish calls sync_content on the same database as the publishing identity', () => {

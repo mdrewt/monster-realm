@@ -69,6 +69,7 @@ export const ERR_OWNERSHIP_REQUIRED_E2E = 'ownership required';
 // The databases the enforcing side is proved on, beside DB_NAME on the same host.
 const ENFORCING_DB_NAME = 'mr-acct-e2e-enforcing';
 const OFFICIAL_DB_NAME = 'mr-acct-e2e-official';
+const NO_FEATURE_DB_NAME = 'mr-acct-e2e-no-feature';
 // accounts.rs:50.
 export const AUDIENCE_NEEDLE = 'pub(crate) const ALLOWED_AUDIENCE: &[&str] = &["monster-realm"];';
 
@@ -2498,15 +2499,21 @@ async function sqlCountIn(dbUrl, db, table) {
   return countFromRows(decodeSqlJson(res.stdout));
 }
 
-// `join_game` over the host's HTTP call route with `bearer` as the connection's
-// token. A reducer Err answers 530 with the error text as the whole body.
-async function callJoinGame(dbUrl, db, bearer) {
-  const res = await fetch(dbUrl + '/v1/database/' + db + '/call/join_game', {
+// `reducer` with the JSON array `args` over the host's HTTP call route, with
+// `bearer` as the connection's token. A reducer Err answers 530 with the error
+// text as the whole body. A fetch that throws throws here.
+async function callReducer(dbUrl, db, reducer, bearer, args) {
+  const res = await fetch(dbUrl + '/v1/database/' + db + '/call/' + reducer, {
     method: 'POST',
     headers: { Authorization: 'Bearer ' + bearer, 'Content-Type': 'application/json' },
-    body: JSON.stringify(['Ada']),
+    body: JSON.stringify(args),
   });
   return { status: res.status, body: await res.text() };
+}
+
+// `join_game` as `Ada` with `bearer` as the connection's token.
+async function callJoinGame(dbUrl, db, bearer) {
+  return callReducer(dbUrl, db, 'join_game', bearer, ['Ada']);
 }
 
 // A token the host mints for a new identity of its own (no login issuer).
@@ -2525,10 +2532,15 @@ async function hostMintedToken(dbUrl) {
 // claim and one naming another entitlement, and admits the entitled stub token;
 // then the official artefact `just release-module official` builds is read back,
 // hashed and published, and refuses the anonymous and the entitled stub token
-// alike. Returns the two ownership tokens the pass detail begins with.
+// alike; then a build of the patched copy that names no cargo feature carries
+// the `default` profile (enforcing, no dev reducers, no login issuer) and, on a
+// database of its own, refuses the anonymous and the entitled stub token at the
+// join and refuses a bind nonce because it holds no attestation key. Returns the
+// ownership tokens the pass detail begins with, then the no-feature token.
 // Reads the profile section of the wasm a build just wrote and requires it to
 // describe that build, so the section follows the features each build was made
 // with rather than one fixed profile. Throws `[acs6/profile] <label>: …`.
+// Returns the parsed section.
 function requireArtefactProfile(repoRoot, wasmPath, label, want) {
   const justfile = path.join(repoRoot, 'justfile');
   const read = run('just', ['--justfile', justfile, 'module-profile', wasmPath], {
@@ -2537,12 +2549,14 @@ function requireArtefactProfile(repoRoot, wasmPath, label, want) {
   if (!read.ok) {
     throw new Error(`[acs6/profile] ${label}: just module-profile failed: ${read.stderr}`);
   }
-  const check = checkArtefactProfile(parseBuildProfile(read.stdout), want);
+  const section = parseBuildProfile(read.stdout);
+  const check = checkArtefactProfile(section, want);
   if (!check.ok) {
     throw new Error(
       `[acs6/profile] ${label}: ${check.reason} :: section ${JSON.stringify(read.stdout)}`,
     );
   }
+  return section;
 }
 
 async function runOwnershipPhase({ repoRoot, tmp, targetDir, wasm, dbUrl, stub }) {
@@ -2662,6 +2676,80 @@ async function runOwnershipPhase({ repoRoot, tmp, targetDir, wasm, dbUrl, stub }
     account: await sqlCountIn(dbUrl, OFFICIAL_DB_NAME, 'account'),
   };
 
+  // The build that names no feature, after every other publish of the copy's
+  // wasm path: it overwrites that path and is published at once.
+  const noFeatureBuild = run(
+    'cargo',
+    ['build', '-p', 'monster-realm-module', '--release', '--target', 'wasm32-unknown-unknown'],
+    { cwd: tmp, env: { ...process.env, CARGO_TARGET_DIR: targetDir }, timeout: 900_000 },
+  );
+  if (!noFeatureBuild.ok) {
+    throw new Error(
+      `[no-feature] cargo build with no feature named failed: ${noFeatureBuild.stderr}`,
+    );
+  }
+  // It enforces ownership, carries no dev reducers and trusts no login issuer.
+  const noFeature = requireArtefactProfile(repoRoot, wasm, 'no-feature build', {
+    profile: 'default',
+    enforcesOwnership: true,
+    devReducers: false,
+    loginIssuers: [],
+  });
+  const noFeaturePublish = run(
+    'spacetime',
+    ['publish', '-s', dbUrl, '--bin-path', wasm, '--delete-data', '-y', NO_FEATURE_DB_NAME],
+    { timeout: 300_000 },
+  );
+  if (!noFeaturePublish.ok) {
+    throw new Error(
+      `[no-feature] publish of the no-feature build failed: ${noFeaturePublish.stderr}`,
+    );
+  }
+  // The anonymous and the entitled stub token are refused at the join, and a
+  // bind nonce is refused because the build holds no attestation key.
+  const noFeatureCalls = [
+    {
+      name: 'anon',
+      label: 'join_game, anonymous',
+      reply: await callJoinGame(dbUrl, NO_FEATURE_DB_NAME, anon),
+      want: ERR_OWNERSHIP_REQUIRED_E2E,
+    },
+    {
+      name: 'entitled',
+      label: 'join_game, an entitled stub-issuer token',
+      reply: await callJoinGame(dbUrl, NO_FEATURE_DB_NAME, entitled),
+      want: ERR_OWNERSHIP_REQUIRED_E2E,
+    },
+    {
+      name: 'bind',
+      label: 'request_bind_nonce, anonymous',
+      reply: await callReducer(dbUrl, NO_FEATURE_DB_NAME, 'request_bind_nonce', anon, []),
+      want: 'this server takes no world binding',
+    },
+  ];
+  const noFeatureAnswers = [];
+  for (const { name, label, reply, want } of noFeatureCalls) {
+    if (reply.status !== 530 || reply.body !== want) {
+      throw new Error(
+        `[no-feature/refusals] ${label}: expected 530 ${JSON.stringify(want)}, got ` +
+          `${reply.status} ${JSON.stringify(reply.body)}`,
+      );
+    }
+    noFeatureAnswers.push(name + '=refused');
+  }
+  const noFeatureToken =
+    'NO-FEATURE-BUILD-VERIFIED(profile=' +
+    noFeature.profile +
+    ' enforces_ownership=' +
+    noFeature.enforcesOwnership +
+    ' dev_reducers=' +
+    noFeature.devReducers +
+    ' login_issuers=' +
+    noFeature.loginIssuers.length +
+    ' ' +
+    noFeatureAnswers.join(' ') +
+    ')';
+
   // g. The verdict.
   const refusals = checkOwnershipRefusals({
     expectedError: ERR_OWNERSHIP_REQUIRED_E2E,
@@ -2671,7 +2759,7 @@ async function runOwnershipPhase({ repoRoot, tmp, targetDir, wasm, dbUrl, stub }
   if (!refusals.ok) throw new Error(refusals.reason);
   // The test and dev-enforcing reads threw on any mismatch, so reaching here
   // means all three artefacts carried their own profile.
-  return formatAcs6Tokens(parsed, line.sha256, refusals.detail, true);
+  return formatAcs6Tokens(parsed, line.sha256, refusals.detail, true) + ' ' + noFeatureToken;
 }
 
 async function runLivePhase() {
@@ -2732,10 +2820,20 @@ async function runLivePhase() {
     writeFileSync(deletionPath, deletionPatched);
 
     // --- build + publish ---
+    // The first build names `open_join`: the driver below joins anonymously on it.
     const targetDir = process.env.MR_ACCT_E2E_TARGET_DIR || path.join(repoRoot, 'target');
     const build = run(
       'cargo',
-      ['build', '-p', 'monster-realm-module', '--release', '--target', 'wasm32-unknown-unknown'],
+      [
+        'build',
+        '-p',
+        'monster-realm-module',
+        '--release',
+        '--target',
+        'wasm32-unknown-unknown',
+        '--features',
+        'open_join',
+      ],
       { cwd: tmp, env: { ...process.env, CARGO_TARGET_DIR: targetDir }, timeout: 900_000 },
     );
     if (!build.ok) throw new Error(`cargo build of the patched module failed: ${build.stderr}`);
@@ -2746,9 +2844,9 @@ async function runLivePhase() {
       'monster_realm_module.wasm',
     );
     if (!existsSync(wasm)) throw new Error(`built wasm not found at ${wasm}`);
-    // The default-feature wasm names its own profile: the test build, not
-    // enforcing, no dev reducers, trusting the patched stub issuer and the
-    // hosted dev issuer.
+    // The wasm of the build that names `open_join` names its own profile: the
+    // test build, not enforcing, no dev reducers, trusting the patched stub
+    // issuer and the hosted dev issuer.
     requireArtefactProfile(repoRoot, wasm, 'test build', {
       profile: 'test',
       enforcesOwnership: false,
