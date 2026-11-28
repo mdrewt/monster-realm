@@ -240,9 +240,10 @@ lines name 213 symbols, and 208 of them are declared in `main.ts`.
   leaves them out.
 - **42 declarations are named by no line and are not in "What `main.ts` keeps".** 41 of them
   have an owner: `shell/config.ts` holds four sign-in constants (`OPERATED_BY_US`, `OIDC_ISSUER`,
-  `SIGN_IN_MODE`, `ACCOUNT_REQUIRED`), and section 4 gives the rest one: `SIGN_IN_OFFER`; the
-  trade editor (`openedTradeSessions`, `pendingTradeOpen`, `TRADE_OPEN_WAIT_MS`,
-  `knownSessionIds`, `resetTradeSessionState`, `openTradeEditor`, `closeTradeEditor`, `tradeOpenExpired`); the sign-in gate (`signInGate`,
+  `SIGN_IN_MODE`, `ACCOUNT_REQUIRED`), `shell/notices.ts` holds `openedTradeSessions`, and
+  section 4 gives the rest one: `SIGN_IN_OFFER`; the trade editor (`pendingTradeOpen`,
+  `TRADE_OPEN_WAIT_MS`, `knownSessionIds`, `resetTradeSessionState`, `openTradeEditor`,
+  `closeTradeEditor`, `tradeOpenExpired`); the sign-in gate (`signInGate`,
   `saidGateLine`, `signInGateView`, `showSignInGate`, `lowerSignInGate`, `applySignInGate`,
   `holdSignInGate`); the pad poll (`TerminalPhase`, `terminalPhase`, `padPhase`,
   `pollTerminalPad`, `pollPad`, `pressEdges`, `settleControlsCapture`); the battle playback
@@ -277,15 +278,15 @@ moving them into those four modules changes no call to `dispatch` or `applyStack
 
 ### 2.3 Disposition of extractions 7 to 18
 
-Each of the twelve is carried into section 4, which is the one list; `client-shell.md` keeps its
-rules, module map, ports, pumps and owner tables and points here. The numbers in the first
-column are the list's at `192b8b3d`, not the rows of the module map. "Kept" means the same
-module takes the same responsibility, with the symbols section 4 lists. None is superseded and
-none is dropped.
+Each of the twelve is carried into section 4, which is the one list, or is built;
+`client-shell.md` keeps its rules, module map, ports, pumps and owner tables and points here. The
+numbers in the first column are the list's at `192b8b3d`, not the rows of the module map. "Kept"
+means the same module takes the same responsibility, with the symbols section 4 lists or, once
+built, the symbols it holds. None is superseded and none is dropped.
 
 | Extraction | Module | Disposition | Section 4 |
 |---|---|---|---|
-| 7 | `shell/notices.ts` | kept; takes `openedTradeSessions` as well | 4 |
+| 7 | `shell/notices.ts` | kept; takes `openedTradeSessions` as well | none: built |
 | 8 | `shell/battleFrame.ts` | kept; takes the battle playback symbols; its port carries the stack reads and the outcome edge, and the command port the rest | 5 |
 | 9 | `shell/frames.ts` | kept; takes `worldIsBare` | 6 |
 | 10 | `shell/movement.ts` | kept; takes `owed`, `lastRendered`, `worldRevealed`, `zoneWarpsById`, `zoneWarps` | 7 |
@@ -361,7 +362,6 @@ fixed in the slice. The slice for a row deletes that row. The symbol lists are m
 
 | # | Module | Kind | Tier | Creates | Covering tests | Feature change |
 |---|---|---|---|---|---|---|
-| 4 | notices | interface | hard | `client/src/shell/notices.ts` | `client/src/main.notices.test.ts`, `client/src/main.noticesRt.test.ts`, `client/src/main.reconnectStack.test.ts` | none added, none removed |
 | 5 | battle frame | interface | hard | `client/src/shell/battleFrame.ts` | `client/src/main.dispatch.test.ts`, `client/src/main.battle-reseed.test.ts`, `client/src/tactics/tacticsBattle.test.ts`, `client/src/tactics/deployPanel.test.ts`, `client/src/tactics/results.test.ts` | none added, none removed |
 | 6 | frames | interface | hard | `client/src/shell/frames.ts` | `client/src/main.dispatch.test.ts`, `client/src/main.reconnectStack.test.ts`, `client/src/main.a11yFocus.test.ts` | none added, none removed |
 | 7 | movement | interface | hard | `client/src/shell/movement.ts` | `client/src/main.input.test.ts`, `client/src/main.zoneCue.test.ts`, `client/src/main.worldReveal.test.ts`, `client/src/net/switchZoneAtomicity.test.ts` | none added, none removed |
@@ -391,12 +391,6 @@ resolver gains the module when it resolves a string; this file;
 set. A row that moves boot wiring or a DEV hook (5, 14, 15) runs the full end-to-end suite as
 well.
 
-4. `client/src/shell/notices.ts` takes `dismissedRequests`, `announcedRequests`,
-   `answeredRequests`, `noticeInput`, `livePending`, `requestLine`, `releaseAnswered` and
-   `openedTradeSessions`. Interface: `dispatch`, `worldPort`, `openTradeEditor`,
-   `resetTradeSessionState`, the listener that announces a new request, the listener that follows
-   the trade sessions and the `connect` callbacks in `main` mutate the four sets, so each mutation
-   becomes an owner function.
 5. `client/src/shell/battleFrame.ts` takes `battleViews`, `battleFrameShown`,
    `hideAllBattleViews`, `activeBattleView`, `tacticalOwnsStart`, `battleHint`, `tacticsRules`,
    `tuningOf`, `refreshBattle`, `popOverBattleBeforeSwitch`, `ownMonsterName`, `tacticsMapFacts`,

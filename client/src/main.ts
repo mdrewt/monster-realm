@@ -156,6 +156,21 @@ import {
   resetAllBindings,
 } from './shell/inputState';
 import {
+  announcedRequests,
+  answeredRequests,
+  dismissRequest,
+  forgetClosedSession,
+  forgetOpenedSessions,
+  forgetRequests,
+  livePending,
+  markAnnounced,
+  markAnswered,
+  markSessionOpened,
+  noticeInput,
+  releaseAnswered,
+  requestLine,
+} from './shell/notices';
+import {
   bindHealLocation,
   bindMonstersTab,
   bindShop,
@@ -366,7 +381,6 @@ import {
   buildNotices,
   dismissKeys,
   type Notice,
-  type NoticeInput,
   pendingRequests,
   type RequestNotice,
   requestSheetLayout,
@@ -643,8 +657,6 @@ let sessionModelState: SessionModelState = SESSION_INITIAL;
 // dismiss_dialogue is in flight, and the shop the greet-then-shop button will open on the
 // first no-conversation batch — never inline. Stepped only through `stepShopOpen`.
 let shopOpen = SHOP_OPEN_INITIAL;
-/** The sessions this client has opened its editor on: an incoming one stops being a request. */
-const openedTradeSessions = new Set<bigint>();
 /** A face-to-face Trade whose `open_trade_session` was sent and whose row has not arrived yet: the
  *  editor opens when it does. Dropped on a rejection, on a reconnect and after `TRADE_OPEN_WAIT_MS`. */
 let pendingTradeOpen: { readonly partner: string; readonly atMs: number } | null = null;
@@ -656,7 +668,7 @@ let knownSessionIds: ReadonlySet<bigint> | null = null;
 /** Forget every trade-session fact of the previous connection or identity. */
 function resetTradeSessionState(): void {
   unbindTradeSession();
-  openedTradeSessions.clear();
+  forgetOpenedSessions();
   pendingTradeOpen = null;
   knownSessionIds = null;
 }
@@ -1384,7 +1396,7 @@ function openTradeEditor(sessionId: bigint): void {
     () => tradeSessionView?.show(),
   );
   // Opened: on this client the session stops being a waiting request.
-  if (tradeSessionView?.visible === true) openedTradeSessions.add(sessionId);
+  if (tradeSessionView?.visible === true) markSessionOpened(sessionId);
 }
 
 /** The editor's Close button: its frame closes through the stack; the session stays open. */
@@ -1516,44 +1528,6 @@ const tradeOpenExpired = (pending: { readonly atMs: number }): boolean =>
 const worldIsBare = (): boolean =>
   contextStack[contextStack.length - 1].kind === 'world' && !screenHost.sheetOpen;
 
-/** The request keys the player dismissed with B (ctl-13), and those already announced. A new
- *  session forgets both: a request still waiting after a reconnect shows and is announced again. */
-const dismissedRequests = new Set<string>();
-const announcedRequests = new Set<string>();
-/** The requests this client has answered (from the world sheet or Social): out of `pending` and
- *  the banner until the server row changes, so a second Y then Enter never answers twice. */
-const answeredRequests = new Set<string>();
-
-function noticeInput(): NoticeInput {
-  return {
-    sessions: store.allTradeSessions(),
-    opened: openedTradeSessions,
-    challenges: store.allChallenges(),
-    players: store.allPlayers(),
-    identity,
-    errorPending: errorOverlayView?.visible ?? false,
-    evolutionPending: evolutionNoticeBanner?.visible ?? false,
-    dismissed:
-      answeredRequests.size === 0
-        ? dismissedRequests
-        : new Set([...dismissedRequests, ...answeredRequests]),
-  };
-}
-
-/** The requests still waiting on an answer from this client. */
-function livePending(): readonly RequestNotice[] {
-  return pendingRequests(noticeInput()).filter((n) => !answeredRequests.has(n.key));
-}
-
-/** The banner's and the announcement's line for a request; it names no key (a remap keeps it true).
- *  A notice standing for several trade requests reads their count. */
-const requestLine = (n: RequestNotice): string =>
-  n.request !== 'trade'
-    ? tf('notice.request.challenge', { name: n.fromName })
-    : n.count !== undefined
-      ? tf('notice.request.trades', { count: n.count })
-      : tf('notice.request.trade', { name: n.fromName });
-
 const worldPort: WorldPort = {
   candidates: worldCandidates,
   run: runInteract,
@@ -1575,7 +1549,7 @@ const worldPort: WorldPort = {
       }
       // B on a line standing for several trade requests dismisses all of them.
       const notice = buildNotices(noticeInput()).find((n) => n.key === key);
-      for (const k of notice === undefined ? [key] : dismissKeys(notice)) dismissedRequests.add(k);
+      for (const k of notice === undefined ? [key] : dismissKeys(notice)) dismissRequest(k);
     },
     // View opens Social on the request's tab, through the same verdict as its own hotkey.
     view: (n) => {
@@ -1929,14 +1903,6 @@ function ownDeployLocked(battleId: bigint): boolean {
   return mine.length > 0 && mine.every((d) => d.locked);
 }
 
-/** C5: a REJECTED answer changed no server row — the request is still Pending, so the optimistic
- *  `answeredRequests` key is released and the banner, badges and Y answer it again. Handed to the
- *  answer arms' helper (`sendGuarded`'s third argument), which is the only place the rejection is
- *  observable: it reports it and resolves. */
-const releaseAnswered = (key: string) => (): void => {
-  answeredRequests.delete(key);
-};
-
 /** Run one command. Not async: each arm hands back its own reducer promise (a view's lock holds
  *  until it settles), and a synchronous throw stays synchronous. No default arm, so a new
  *  `Command` fails client-typecheck here. `line` is the outcome line of the frame that sent it
@@ -1946,9 +1912,9 @@ function dispatch(command: Command, line?: OutcomeLine): Promise<void> {
   // An answer leaves the request out of the world's notices until the server row changes (ctl-13).
   // The add stays optimistic — on answer, not settle, so the banner never flashes while the answer
   // is in flight; the arm's reject path releases it again (`releaseAnswered`, C5).
-  if (command.kind === 'cancelTradeSession') answeredRequests.add(`session-${command.sessionId}`);
+  if (command.kind === 'cancelTradeSession') markAnswered(`session-${command.sessionId}`);
   if (command.kind === 'acceptChallenge' || command.kind === 'declineChallenge')
-    answeredRequests.add(`challenge-${command.challengeId}`);
+    markAnswered(`challenge-${command.challengeId}`);
   switch (command.kind) {
     case 'pop':
       applyStack(contextStack, popTop(contextStack));
@@ -4064,13 +4030,7 @@ store.onBatchApplied(() => {
       knownSessionIds === null ? [] : closedSessionIds(knownSessionIds, sessions, identity);
     knownSessionIds = new Set(sessions.map((session) => session.sessionId));
     if (closed.length === 0) return;
-    for (const id of closed) {
-      const key = `session-${id}`;
-      openedTradeSessions.delete(id);
-      dismissedRequests.delete(key);
-      announcedRequests.delete(key);
-      answeredRequests.delete(key);
-    }
+    for (const id of closed) forgetClosedSession(id);
     if (boundTradeSessionId !== null && closed.includes(boundTradeSessionId)) {
       unbindTradeSession();
       // The frame goes through the stack: the view hides and the sync pops it.
@@ -4110,7 +4070,7 @@ store.onBatchApplied(() => {
   try {
     const pending = pendingRequests(noticeInput());
     const arrived = pending.filter((n) => !announcedRequests.has(n.key));
-    for (const n of arrived) announcedRequests.add(n.key);
+    for (const n of arrived) markAnnounced(n.key);
     // One line for the batch. The banner's own when it stands for a request that just arrived
     // (several new trade requests read as their count); else the first new request's line, so an
     // older request holding the banner never hides a new one from the screen reader.
@@ -5087,9 +5047,7 @@ async function main(): Promise<void> {
       // A screen opened before the join must not be remembered into this identity's session.
       screenHost.forget();
       resetTradeSessionState();
-      dismissedRequests.clear();
-      announcedRequests.clear();
-      answeredRequests.clear();
+      forgetRequests();
       // record the connect edge (identity-hex is the allowed field, U-3).
       eventRing.push(makeConnect(identity));
       markReady();
@@ -5171,9 +5129,7 @@ async function main(): Promise<void> {
       unbindForReconnect();
       resetTradeSessionState();
       screenHost.forget();
-      dismissedRequests.clear();
-      announcedRequests.clear();
-      answeredRequests.clear();
+      forgetRequests();
       // The SDK never settles a reducer promise after a drop: a care sent before it would hold its
       // monster's in-flight slot for the life of the page.
       careInFlight.clear();

@@ -1204,7 +1204,25 @@ moment of the read. `main.ts` binds at each open (`bindShop`, `bindHealLocation`
 `bindSocialTab`, `bindMonstersTab`, `bindTradeSession`), clears the first four on a reconnect
 (`unbindForReconnect`), and unbinds the trade session (`unbindTradeSession`) when that session
 closes, on a join and on a reconnect. `main.ts` reads the motion preference in the frame loop
-and hands the tactical shell a getter of it.
+and hands the tactical shell a getter of it. `shell/notices.ts` owns the trade and challenge
+requests waiting on this client: the request keys the player dismissed, those already announced and
+those answered, and the trade sessions whose editor this client opened. It builds the notice input
+from the dismissed and answered keys, the opened sessions, the store, the identity and the error
+and evolution views (`noticeInput`), and it gives the requests still waiting on an answer
+(`livePending`) and the line a request reads in the banner, the sheet and the announcement
+(`requestLine`). Only that module changes the four sets, and it exports the announced and answered
+keys as read-only views.
+`main.ts` calls its owner functions:
+- `dispatch` marks a request answered when it runs the answer (`markAnswered`), and a rejected
+  answer releases it (`releaseAnswered`);
+- the world port's B dismisses a request (`dismissRequest`);
+- the listener that announces a new request marks it announced (`markAnnounced`);
+- `openTradeEditor` marks the session opened (`markSessionOpened`);
+- the trade-session listener forgets a closed session's facts (`forgetClosedSession`);
+- `resetTradeSessionState` forgets the opened sessions (`forgetOpenedSessions`);
+- a join and a reconnect forget the request keys (`forgetRequests`).
+
+The module registers nothing.
 
 A lower shell module reaches upward through a port `main.ts` installs, or through the parameter
 object of a frame-loop pump. Three ports are installed: the world hint's host (`installHintHost`,
