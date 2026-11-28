@@ -593,5 +593,18 @@ describe('shell/frames', () => {
       m.frames.pumpCareReadiness(1501);
       expect(observe).toHaveBeenCalledTimes(1);
     });
+
+    it('with the box covered by another frame, still observes the stack', async () => {
+      const m = await fresh();
+      vi.spyOn(performance, 'now').mockReturnValue(1_000_000);
+      openPlayer(m, 'boxView');
+      openPlayer(m, 'helpView');
+      expect(m.frames.upperIds(), 'fixture: help covers the box').toEqual(['boxView', 'helpView']);
+      const observe = vi.spyOn(m.frames.screenHost, 'observe').mockImplementation(() => undefined);
+      m.frames.pumpCareReadiness(1000);
+      expect(observe).toHaveBeenCalledTimes(1);
+      expect(observe.mock.calls[0]?.[0]).toBe(m.frames.contextStack);
+      expect(observe.mock.calls[0]?.[1]).toBe(m.screenContext.screenCtx);
+    });
   });
 });
