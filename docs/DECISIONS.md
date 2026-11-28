@@ -1385,272 +1385,243 @@ The logger, the heartbeat and the stack's parts: `ARCHITECTURE.md` "Observabilit
 
 ## Client UI: virtual buttons, one context stack, one overlay frame
 
-**Decision.** Every input resolves, through one binding table
-(`client/src/input/bindings.ts`), to a closed set of virtual buttons: D-pad, A, B, X, Y,
-LB, RB, Start, Select. Letter keys are optional accelerators that open a canonical menu
-path. Every screen is a frame on one pure context stack (`client/src/ui/contextStack.ts`)
-over a world or battle base. B pops one frame; Start pops every frame to the base, or
-opens the main menu at a base. `SCREEN_POLICY` is a total record per frame (owner, battle
-behaviour, battle-safety). Server-owned state (battles and dialogue) is reconciled into
-the stack on every batch, never pushed by a keypress, and the client never closes a
-server-owned frame itself; it sends the reducer (`dismissDialogue`). A trade or challenge
-request is a non-modal banner and world sheet, never a frame. Which overlay may open
-over another is still the tier table `canOpen` reads (`client/src/ui/overlayRegistry.ts`).
-Every frame is a class-styled `.mr-frame` inside `#game-screen`; `client/src/ui/frame.ts`
-is the shared chrome (the main menu uses it today). Menus are D-pad lists, grids and tabs
-(`client/src/ui/nav.ts`) whose active item is a key, never an index or a pointer cursor.
-The hint bar and Help are generated from the context table, the live bindings and the
-catalog (`client/src/ui/hintBarModel.ts`, `client/src/ui/helpModel.ts`). Bindings persist
-per browser in `localStorage['mr.controls']` (versioned; D-pad, A, B and Start always keep
-a key). Every waiting Controls cell has a way out on the pad: the button a Pad cell shows,
-else the live B, and the waiting line names it for a player on the pad. The session terminal is
-outside the router and the overlay registry, so the pad reaches its buttons directly: the D-pad or
-the stick moves and A presses, while B and Start do nothing. A button held while the terminal
-opens, closes, arms or disarms its confirm step acts only once released and pressed again. Escape alone is
-routed in the capture phase, so a view's `stopPropagation` cannot trap it; every other key
-keeps the bubble phase, where text-entry views shield their
-fields from the accelerators. Each view keeps its state in a pure model (`*Model.ts`) with
-a thin DOM view. Accessibility metadata for every overlay is one total record
-(`OVERLAY_A11Y`); a status condition is named by text, never by colour alone — on the tactical
-board through the exhaustive `tactics.status.*` catalog keys (the 1v1 badges and their
-`A11Y_TOKENS` link left with the 1v1 view in bt-17); `Element.animate` is banned by
-a Biome plugin (`client/lint/no-waapi.grit`) because it ignores
-`prefers-reduced-motion`. All UI strings come from a total typed catalog
-(`client/src/ui/i18n/`: `en` and `fr`); `t()` throws on a missing key, and `setLocale`
-throws on an unregistered locale. One whole-tree scan (`client/src/ui/i18n/hardcodedStrings.test.ts`)
-asserts that no non-test client file writes a raw string to a text sink; its sink floor only proves
-the scan still sees the tree. Per-view behaviour is owned by each view's «key»-sentinel runtime
-tests.
+**Decision.** Every input resolves, through one binding table, to a closed set of virtual buttons:
+the D-pad, A, B, X, Y, LB, RB, Start and Select. Letter keys are optional accelerators that open a
+canonical menu path. Every screen is a frame on one pure context stack over a world or battle base:
+B pops one frame, and Start pops every frame to the base, or opens the main menu at a base. Every
+frame is a class-styled frame inside the game screen. Server-owned state (battles and dialogue) is
+reconciled into the stack on every batch, never pushed by a keypress, and the client never closes a
+server-owned frame itself: it sends the reducer. A trade or challenge request is a non-modal banner
+and world sheet, never a frame. Which overlay may open over another is one tier table. Menus are
+D-pad lists, grids and tabs whose active item is a key, never an index or a pointer cursor. The hint
+bar and Help are generated from the context table, the live bindings and the catalog. Bindings
+persist per browser, and the D-pad, A, B and Start always keep a key. Every waiting Controls cell
+has a way out on the pad: the button a Pad cell shows, else the live B, and the waiting line names
+it for a player on the pad. The session terminal is outside the router and the overlay registry, so
+on the pad the D-pad or the stick moves and A presses, while B and Start do nothing; a button held
+while the terminal opens, closes, arms or disarms its confirm step acts only once released and
+pressed again. Escape is routed ahead of every view, so no view can trap it (an Escape that ends an
+IME composition is the IME's); text-entry views shield their fields from the other keys'
+accelerators. Each view keeps its state in a pure model with a thin DOM view. Accessibility metadata
+for every overlay is one total record. A status condition is named by text, never by colour alone.
+All UI strings come from a total typed catalog (`en` and `fr`): a lookup throws on a missing key,
+and switching to an unregistered locale throws. One whole-tree scan holds that no non-test client
+file writes a raw string to a text sink; its sink floor only proves the scan still sees the tree,
+and each view's own runtime tests hold its behaviour.
 
-**Why.** A handheld-console grammar, where a few contextual buttons are primary and
-hotkeys are shortcuts, is the intended interface. One stack makes "back one level" and
-"exit everything" uniform. Silently dismissing a modal on a stray keypress loses input,
-and for dialogue it desyncs server conversation state, so server-owned frames follow the
-store and an ongoing battle cannot be hidden. Pure models make the UI logic testable
-without a DOM. Generated hints and help cannot drift from the bindings. A pad-only
-player has no other way out of a cell that takes keys, or of a Pad cell with no button to press
-again; B is always bound and already means back. Nothing else on the pad can press Retry or
-Continue as guest, and the confirm step gives up this tab's account session, which cannot be undone, so one
-press must never both open it and answer it. A total catalog makes a missing
-translation a compile error rather than a blank label, and throwing (rather than showing the key) keeps an unwired string from looking wired.
+**Why.** A handheld-console grammar, where a few contextual buttons are primary and hotkeys are
+shortcuts, is the intended interface. One stack makes "back one level" and "exit everything"
+uniform. Silently dismissing a modal on a stray keypress loses input, and for dialogue it desyncs
+server conversation state, so server-owned frames follow the store and an ongoing battle cannot be
+hidden. Pure models make the UI logic testable without a DOM. Generated hints and help cannot drift
+from the bindings. A pad-only player has no other way out of a cell that takes keys, or of a Pad
+cell with no button to press again; B is always bound and already means back. Nothing else on the
+pad can press Retry or Continue as guest, and the confirm step gives up this tab's account session,
+which cannot be undone, so one press must never both open it and answer it. WAAPI animation ignores
+`prefers-reduced-motion`. A total catalog makes a missing translation a compile error rather than a
+blank label, and throwing (rather than showing the key) keeps an unwired string from looking wired.
 
-**Rules out.** A feature reachable only by a hotkey (F9's menu twin, Options › Report a
-problem, is still owed); a hotkey-only discovery menu; leaving a waiting cell on a
-timeout or disabling Key cells after pad input (a pad player with a keyboard at hand can
-still bind keys); B answering No on the session terminal (a step there is left by choosing a
-button, and B keeps one meaning on every step of it: nothing); a
-hand-written controls list; a dedicated interact key; new per-overlay tiers,
-mutual-exclusion checks or force-hide lists; overlays anchored to the window or in page
-flow; menus that hide themselves on a pick; conveying meaning by colour alone; WAAPI
-animation; hard-coded UI strings; falling back to the key or `en` when a string is
+**Rules out.** A feature reachable only by a hotkey; a hotkey-only discovery menu; leaving a waiting
+cell on a timeout or disabling Key cells after pad input (a pad player with a keyboard at hand can
+still bind keys); B answering No on the session terminal (a step there is left by choosing a button,
+and B keeps one meaning on every step of it: nothing); a hand-written controls list; a dedicated
+interact key; new per-overlay tiers, mutual-exclusion checks or force-hide lists; overlays anchored
+to the window or in page flow; menus that hide themselves on a pick; conveying meaning by colour
+alone; WAAPI animation; hard-coded UI strings; falling back to the key or `en` when a string is
 missing; per-view copies of the string scan, or a ratchet fixture for the failing-sink count. A
 per-view copy only adds a "this file is still visible to the scanner" tripwire. Going without it is
 an accepted risk: a single view going dark to the scanner by less than the floor's margin goes
 unnoticed by the scan, and only the sinks its runtime tests render are still checked.
 
+The binding table, the stack, the router's key phases, the catalog and the string scan:
+`ARCHITECTURE.md` "Client", UI.
+
 ## Context stack ownership
 
-**Decision.** The context stack owns the player's frames. Every player open (a menu entry,
-an accelerator, a world interaction, the deferred shop open, a claim lifecycle prompt) goes
-through one `openFrame` in `client/src/main.ts`, which pushes the frame first and only then
-shows its view. A frame already on the stack is not pushed again; `contextStep`'s same-id
-push no-op is the one dedup. The trade, challenge and leaderboard panels are one `social`
-frame, and switching panels pushes and pops nothing. The visibility mirror sees only the
-server-owned overlays (`MIRRORED_IDS` in `client/src/ui/contextStack.ts`: `battleView`,
-which presents the battle base and the terminal outcome, and `dialogueView`), because those
-show themselves on server edges. A player view that closes itself has its frame popped at
-the next sync (`hiddenPops`), never pushed. The three main.ts tables (probes, hide handles,
-lent views) keep rows only for the mirrored ids, and a player frame's probe, hide and view
-travel with its open. A movement-gate read derives from the stack as it stands and never
-syncs it.
+**Decision.** The context stack owns the player's frames. Every player open (a menu entry, an
+accelerator, a world interaction, the deferred shop open, a claim lifecycle prompt) goes through one
+open path, which pushes the frame first and only then shows its view. A frame already on the stack
+is not pushed again, and the stack's own same-id push is the one dedup. The Social panels are one
+Social frame, and switching panels pushes and pops nothing. Only the server-owned overlays, the
+battle and the dialogue, are mirrored from their views' visibility, because they show themselves on
+server edges. A player view that closes itself has its frame popped at the next sync, never pushed.
+A player frame's probe, hide and view travel with its open. A movement-gate read derives from the
+stack as it stands and never syncs it.
 
-**Why.** When the stack mirrored the views' self-managed visibility, every reader had to
-re-sync first: gate reads mutated the stack, a shown overlay could sit off the stack until
-the next key, frame or batch, and a second input source would have had to re-derive the
-open path. One push-first entry point gives a gamepad (M-gamepad) the same open path as the
-keyboard, and makes "shown but not on the stack" impossible for the player set.
+**Why.** When the stack mirrored the views' self-managed visibility, every reader had to re-sync
+first: gate reads mutated the stack, a shown overlay could sit off the stack until the next key,
+frame or batch, and a second input source would have had to re-derive the open path. One push-first
+open path gives a gamepad the same open path as the keyboard, and makes "shown but not on the
+stack" impossible for the player set.
 
-**Rules out.** Showing a player view outside `openFrame`; pushing a player frame from
-visibility; a per-panel Social frame; merging the three main.ts tables into one registry
-(three small total records with byte-identical thunks are the defense against copy-paste
-sibling bugs); a gate read that pushes, pops, shows or hides a frame.
+**Rules out.** Showing a player view outside the open path; pushing a player frame from visibility;
+a per-panel Social frame; merging the three mirrored-frame tables (probes, hide handles, lent views)
+into one registry (three small total records with byte-identical thunks are the defense against
+copy-paste sibling bugs); a gate read that pushes, pops, shows or hides a frame.
+
+The open path and the mirrored ids: `ARCHITECTURE.md` "Client", UI.
 
 ## A hold gesture is a router edge: the top frame lists its hold-capable buttons
 
-**Decision.** The top frame lists the buttons it treats as hold-capable (`RouteContext.hold` in
-`client/src/input/router.ts`; `HOLD_MS` is 500). A listed button's press asks nothing. A
-release before `HOLD_MS` delivers its tap at the release; held `HOLD_MS`, the frame's adapter
-is asked once with a hold input (`NavInput.hold`, `client/src/ui/nav.ts`) and the release is
-swallowed. Arming is per button whatever the source (key, pad, pointer). A frame change,
-`resetRepeat` / `releaseAll`, or a frame that stops listing the button drops the press with
-nothing delivered. The D-pad and X are never hold-capable. Today only the bare tactical battle
-base lists Y, and only while the shell can clear the selected unit's READY plan
-(`battleHoldButtons` in `client/src/ui/screens/battleScreen.ts`,
-`TacticsBattle.clearPlanHoldable`): a Y tap shows the hold-to-clear line, which names the live
-keycap of Y on the last-used device ("Hold F to clear the plan" on the default keyboard; "Y" where
-that device binds nothing to it), a Y hold sends `cancel_queue` through the same path as the
-confirmed Clear plan row. B is never listed: its skip of a playing beat stays at the press.
+**Decision.** The top frame lists the buttons it treats as hold-capable, and the router holds the one
+hold clock (500 ms). A listed button's press asks nothing. A release before the hold time delivers
+its tap at the release; held that long, the frame is asked once with a hold input and the release is
+swallowed. Arming is per button whatever the source (key, pad, pointer). A frame change, a reset or
+release of every button, or a frame that stops listing the button drops the press with nothing
+delivered. The D-pad and X are never hold-capable. Today only the bare tactical battle base lists Y,
+and only while the shell can clear the selected unit's READY plan: a Y tap shows the hold-to-clear
+line, which names the live keycap of Y on the last-used device, and a Y hold clears the plan the way
+the confirmed Clear plan row does. B is never listed: its skip of a playing beat stays at the press.
 
-**Why.** A held button must never also act as a tap, and a tap must not wait on a timer on
-every screen. Only a frame that offers a hold pays the tap-at-release latency; every other
-button and screen keeps press-time response. One router rule serves the keyboard, the pad and
-the pointer alike, since the pad is one more source of the same edges. B keeps press-time skip
-because keyboard and pointer players already skip at the press; a tap-vs-hold B would turn
-their tap into an undo, a feel change deferred to the tactical battle's depth work and flagged
-to the operator.
+**Why.** A held button must never also act as a tap, and a tap must not wait on a timer on every
+screen. Only a frame that offers a hold pays the tap-at-release latency; every other button and
+screen keeps press-time response. One router rule serves the keyboard, the pad and the pointer
+alike, since the pad is one more source of the same edges. B keeps press-time skip because keyboard
+and pointer players already skip at the press; a tap-vs-hold B would turn their tap into an undo, a
+feel change left to the tactical battle's depth work.
 
-**Rules out.** Per-screen hold timers or a second hold clock; listing a button whose tap must
-act at the press (B while a beat plays, the D-pad, X); a hold that also delivers its tap;
-treating a held key's OS auto-repeat as a hold.
+**Rules out.** Per-screen hold timers or a second hold clock; listing a button whose tap must act at
+the press (B while a beat plays, the D-pad, X); a hold that also delivers its tap; treating a held
+key's OS auto-repeat as a hold.
+
+The router's hold edge and the battle base's list: `ARCHITECTURE.md` "Client", UI.
 
 ## Code leaves `client/src/main.ts` into owner modules under `client/src/shell/`; `main.ts` stays the composition root
 
 **Decision.** An extraction from `client/src/main.ts` follows the map in
-`docs/refactors/client-shell.md`: layered modules under `client/src/shell/`, each owning its
-mutable state as module-level `export let` bindings. Another module reads a binding through
-its import, which is live, and changes it only by calling a function the owner exports; a
-`Set` or `Map` that several modules mutate is exported read-only with an owner function per
-mutation. `main.ts` remains the entry. Of `main.ts` and the shell modules, only `main.ts`
-registers a listener on `store`, `window` or `document`, installs the DEV hooks, writes the DOM
-at import or constructs a boot-built view; its registrations keep the order the plan lists, and
-the locale block stays in it. A shell module imports only the shell modules below it. A lower
-module reaches upward through a typed port `main.ts` installs (the host of the world hint;
-what the battle views need from `dispatch` and the stack; the Gamepad API's fault sink), which
-throws until installed, or logs to the console until installed when its caller swallows a throw
-(the pad's fault sink: a failing reporter must not stop the poll that releases held buttons), or
-through the parameter object of a frame-loop pump.
+`docs/refactors/client-shell.md`: layered modules under `client/src/shell/`, each owning its mutable
+state as module-level `export let` bindings. Another module reads a binding through its import,
+which is live, and changes it only by calling a function the owner exports; a `Set` or `Map` that
+several modules mutate is exported read-only with an owner function per mutation. `main.ts` remains
+the entry. Of `main.ts` and the shell modules, only `main.ts` registers a listener on the store, the
+window or the document, installs the DEV hooks, writes the DOM at import or constructs a boot-built
+view; its registrations keep the order the plan lists, and the locale block stays in it. A shell
+module imports only the shell modules below it. A lower module reaches upward through a typed port
+`main.ts` installs, which throws until installed, or logs to the console until installed when its
+caller swallows a throw (the pad's fault sink: a failing reporter must not stop the poll that
+releases held buttons), or through the parameter object of a frame-loop pump.
 
-**Why.** Every `client/src/main.*.test.ts` suite resets the module registry and imports
-`./main`, so module-level state in a shell module resets per test and no suite changes how it
-boots. An import cannot be assigned, so the compiler holds each binding to one writing
-module, and a moved body changes only by its imports or by the owner call that replaces a
-write. The order of the batch listeners is load-bearing (`reconcileStack` first of the
-listeners that show or hide a view; the stack sync and the adapters' observe last), and Biome
-reorders import statements, so registration cannot follow module evaluation. The locale writes
-are the only import-time statements another module could observe, and in `main.ts` they run
-after every import.
+**Why.** Every `main.*` suite resets the module registry and imports `main.ts`, so module-level
+state in a shell module resets per test and no suite changes how it boots. An import
+cannot be assigned, so the compiler holds each binding to one writing module, and a moved body
+changes only by its imports or by the owner call that replaces a write. The order of the batch
+listeners is load-bearing (the stack's reconcile ahead of every listener that shows the battle or
+the dialogue; the stack sync and the adapters' observe last), and Biome reorders import statements, so
+registration cannot follow module evaluation. The locale writes are the only import-time statements
+another module could observe, and in `main.ts` they run after every import.
 
-**Rules out.** Feature modules that each own a view and register their own batch listener at
-import: listener order would follow import order, and the stack and `dispatch` would import
-the features that import them. Also: one shared state object (no field has an owner, and
-every test that reads a bare identifier from the source changes); controller classes with
-injected collaborators (each extraction would move code and change its interface at once); a
-prelude module holding the locale block (it would run ahead of modules that run before it
-now); a module-scope copy of a live binding; a shell module that registers a listener.
+**Rules out.** Feature modules that each own a view and register their own batch listener at import:
+listener order would follow import order, and the stack and the dispatcher would import the features
+that import them. Also: one shared state object (no field has an owner); controller classes with
+injected collaborators (each extraction would move code and change its interface at once); a prelude
+module holding the locale block (it would run ahead of modules that run before it now); a
+module-scope copy of a live binding; a shell module that registers a listener.
+
+The shell modules and the ports `main.ts` installs: `ARCHITECTURE.md` "Client".
 
 ## Each client registry has one test that states its members
 
 **Decision.** A fact that a client registry holds (the overlay ids, the catalog keys, the
 subscription batch, the help entries, the command kinds, the menu rows and accelerators) is written
 out as a literal by one test: a roster compared with the registry for equality, in order where order
-is behaviour, in the test file beside the registry. The frame ids have no list of their own: they
-are the overlay roster plus the Social frame. Any other test computes its expected value from the
-registry, asserts only its own entity, or gives the assertion up to the owner; none asserts a bare
-count of a registry or carries one in its title. A hand table that says what each member should be
-(its tier, its battle policy, its adapter, its name) is expected behaviour: it stays hand-written,
-typed `Record<K, _>` where the registry has a key type. The subscription batch is read from what
-`connect()` sends and is not exported for a test. `docs/refactors/test-pins.md` lists each fact, its
-owner, and the slices that bring the existing tests to this rule.
+is behaviour, beside the registry. The frame ids have no list of their own: they are the overlay
+roster plus the Social frame. Any other test computes its expected value from the registry, asserts
+only its own entity, or gives the assertion up to the owner; none asserts a bare count of a registry
+or carries one in its title. A hand table that says what each member should be (its tier, its battle
+policy, its adapter, its name) is expected behaviour: it stays hand-written, typed `Record<K, _>`
+where the registry has a key type. The subscription batch is read from what the connection sends and
+is not exported for a test.
 
-**Why.** A registry's size written into many tests makes a slice that adds one member edit each of
-them, and two slices that name the same test file never run together. A count cannot say which
-member changed and survives a swap; a roster can, so the roster is the one literal worth keeping.
-The compiler holds the `Record` tables total, but not the subscription batch, the help entries or
-the menu rows, so one owner per fact is what still goes red when a member is added, dropped or
-reordered by accident, and what a client subscribes to is what it is sent.
+**Why.** A count cannot say which member changed and survives a swap; a roster can, so the roster is
+the one literal worth keeping. The compiler holds the `Record` tables total, but not the
+subscription batch, the help entries or the menu rows, so one owner per fact is what still goes red
+when a member is added, dropped or reordered by accident, and what a client subscribes to is what it
+is sent.
 
-**Rules out.** Leaving the duplicates and letting each run add the pin files to its own file list:
-the edits, the serialization and the stale counts all stay. A shared constants module for tests: a
-second copy of every registry, in one file every slice edits, and not a check. No roster at all:
-nothing would notice a thirtieth subscription query. Rebuilding a per-member table, or the
-subscription expectation, from the product value it checks. A tally that adds one per pass of a
-loop over the registry, or that counts whether another test ran.
+**Rules out.** Leaving the duplicate counts: a stale count still says nothing about which member
+changed. A shared constants module for tests: a second copy of every registry, and not a check. No
+roster at all: nothing would notice a thirtieth subscription query. Rebuilding a per-member table,
+or the subscription expectation, from the product value it checks. A tally that adds one per pass of
+a loop over the registry, or that counts whether another test ran.
+
+Each fact and its owning test: `docs/refactors/test-pins.md`.
 
 ## Interaction target: the tile in front, then your own tile
 
-**Decision.** A (and a click on the world) acts on the candidates from
-`game_core::interact_candidates`, exported to the client as
-`interact_candidates_coded`. The candidates are the entities on the tile the character
-faces (`pos.step(facing)`), or, if there are none, the entities on the character's own
-tile. Same zone only; ordered NPC, then heal, then player, then by id. An entity
-within range but not in front is never a candidate, even though `talk` accepts up to
-`TALK_RANGE` (2). The UI starts trades and challenges only from a player you face, a
-shop only from its keeper's greeting, and a heal only from a faced heal tile or
-`Heal(_)` NPC. The server is more permissive than the client. `talk` accepts
-`TALK_RANGE` from the NPC's current tile. `open_trade_session` and `challenge_pvp`
-refuse a partner outside `game_core::interact::within_interact_range` (same zone,
-Manhattan distance at most `TALK_RANGE`), and `heal_party` refuses a caller outside
-that range of the heal location's tile. `buy` and `sell` refuse a caller outside
-`game_core::interact::within_npc_reach` of an NPC offering that shop (`sell`: any
-shop): the same zone and at most `TALK_RANGE + wander_radius` from the NPC's home tile.
-Each of those five has one message for every out-of-range case: another zone, too far
-and a missing character. A challenge or a trade session is answered from anywhere: its
-range is checked only when it is opened. In `challenge_pvp` the range check runs right
-after "target is joined and online" and before the checks that answer from the target's
-account, battles and pending challenges, so a caller out of range learns only whether
-the target is joined and online. In `buy`, `sell` and `heal_party` it runs after the
-deletion gate and before the battle guard and every read of the caller's wallet,
-inventory and cooldown.
+**Decision.** A (and a click on the world) acts on the candidates of one game-core rule: the entities
+on the tile the character faces, or, if there are none, the entities on the character's own tile.
+Same zone only; ordered NPC, then heal, then player, then by id. An entity within range but not in
+front is never a candidate, even though talking accepts up to two tiles. The UI starts trades and
+challenges only from a player you face, a shop only from its keeper's greeting, and a heal only from
+a faced heal tile or healer NPC. The server is more permissive. Talking accepts the talk range from
+the NPC's current tile. Opening a trade session and challenging refuse a partner beyond it (same
+zone, at most two tiles of Manhattan distance), and healing refuses a caller beyond it from the heal
+location's tile. Buying and selling refuse a caller beyond the talk range plus the keeper's wander
+radius from the keeper's home tile, the same zone only. Each of those five refusals has one message
+for every out-of-range case: another zone, too far and a missing character.
+A challenge or a trade session is answered from anywhere: its range is checked only when it is
+opened. A challenger out of range learns only whether the target is joined and online; a shop or
+heal caller out of range is refused before the battle guard and before any read of their wallet,
+inventory or cooldown.
 
-**Why.** Interaction follows what the character faces, as in console RPGs. The
-server's range is a latency margin for an NPC or a player that steps one tile before
-the reducer runs. It is not the player's reach. A shop is measured from home plus the
-wander radius because its keeper wanders once the greeting ends while the shop frame
-stays open; measured from where the keeper stands, an open shop would strand its
-customer. The order in `challenge_pvp` is not a privacy guarantee: a player who walks up
-to the target still gets those answers. A range refusal itself reveals nothing new,
-because `character`, `npc` and `heal_location_row` are public tables.
+**Why.** Interaction follows what the character faces, as in console RPGs. The server's range is a
+latency margin for an NPC or a player that steps one tile before the reducer runs. It is not the
+player's reach. A shop is measured from home plus the wander radius because its keeper wanders once
+the greeting ends while the shop frame stays open; measured from where the keeper stands, an open
+shop would strand its customer. The order in a challenge is not a privacy guarantee: a player who
+walks up to the target still gets those answers. A range refusal itself reveals nothing new, because
+characters, NPCs and heal locations are public rows.
 
-**Rules out.** A nearest-within-range target; widening the client rule to match
-`TALK_RANGE`; starting a trade, a challenge, a purchase, a sale or a heal remotely from a
-menu; re-checking range when a challenge is accepted or a trade session is confirmed;
-measuring a shop from its keeper's current tile; content that leaves an NPC outside its
-wander disc, or lets a `Heal(_)` NPC stand or wander more than one tile from its
-location's tile (the reach rules assume neither, and that NPC's customers are refused).
+**Rules out.** A nearest-within-range target; widening the client rule to match the talk range;
+starting a trade, a challenge, a purchase, a sale or a heal remotely from a menu; re-checking range
+when a challenge is accepted or a trade session is confirmed; measuring a shop from its keeper's
+current tile; content that leaves an NPC outside its wander disc, or lets a healer NPC stand or
+wander more than one tile from its location's tile (the reach rules assume neither, and that NPC's
+customers are refused).
+
+The candidate rule and each reducer's range check: `ARCHITECTURE.md` "server-module: the
+authority", Battles, trades and the rest (Reach).
 
 ## The battle frame has one owner per tactical phase
 
-**Decision.** Three views can own the `battleView` frame — the deploy panel, the tactical shell
-and the results panel — and at most one shows at a time. `refreshBattle` routes by the tactical
-row's phase (`battleRenderer`: Deploying → the deploy panel, Active → the shell, Finished → the
-results panel, no row → `none`) and switches with one fixed ritual: render the hidden target first,
-pop every PLAYER frame over the battle base, hide the other views, then show (the open is the last
-statement); a target that cannot be built or rendered leaves the current owner in place. An anchor
-WITHOUT its tactical row is not a battle the client can show (bt-17 deleted the 1v1 view): an
-Ongoing one builds nothing and keeps a shown owner (B17 reads "a battle the client can render is
-never hidden"; the stack still holds the battle base and Start opens the menu), a terminal one is
-dismissed and every view hides in the same batch — `renderableBattle` is the one predicate
-`reconcileStack` and `refreshBattle` share, so the stack never counts an unrenderable outcome. The
-three roots are built lazily on the first batch that routes to them, share the one `battleView`
-overlay a11y record, and keep their own `hide()` idempotent; `activeBattleView`,
-`tacticalOwnsStart` and `battleHint` read the SHOWN view, never the phase.
+**Decision.** Three views can own the battle frame (the deploy panel, the tactical shell and the
+results panel), and at most one shows at a time. One switch routes by the tactical row's phase
+(Deploying to the deploy panel, Active to the shell, Finished to the results panel, no row to none)
+with one fixed ritual: render the hidden target first, pop every player frame over the battle base,
+hide the other views, then show, the open being the last statement; a target that cannot be built or
+rendered leaves the current owner in place. An anchor without its tactical row is not a battle the
+client can show: an Ongoing one builds nothing and keeps a shown owner (a battle the client can
+render is never hidden; the stack still holds the battle base, and Start opens the menu), and a
+terminal one is dismissed, with every view hidden in the same batch. The stack and the switch share
+one predicate for a renderable battle, so the stack never counts an unrenderable outcome. The three
+roots are built lazily on the first batch that routes to them, share the battle frame's one
+accessibility record, and keep their own hide idempotent. The active battle view, the battle hint
+and whether the tactical shell owns Start are read from the shown view, never the phase.
 
-**Why.** The overlay registry, the context stack, the a11y record (`OVERLAY_A11Y`, the adopted
-live region, the focus trap) and every test and e2e selector (`[data-testid="battle-title"]`,
-`aria-modal`) key on ONE id, `battleView`. Two visible roots would be two titles and two modal
-dialogs; closing a covered record and opening a fresh one would leave a frame over the base inert;
-a root constructed at boot would be a second title and a second modal dialog the moment a battle
-routes to another owner. Routing by phase keeps B17 a one-place rule, and sharing the renderable
-predicate with the stack keeps a row-less terminal anchor from closing drop-policy frames on every
-batch with nothing on screen.
+**Why.** The overlay registry, the context stack and the accessibility record (the live region, the
+focus trap) key on one battle frame id. Two visible roots would be two titles and two modal dialogs;
+closing a covered record and opening a fresh one would leave a frame over the base inert; a root
+constructed at boot would be a second title and a second modal dialog the moment a battle routes to
+another owner. Routing by phase keeps "a battle the client can render is never hidden" a one-place
+rule, and sharing the renderable predicate with the stack keeps a row-less terminal anchor from
+closing drop-policy frames on every batch with nothing on screen.
 
-**Rules out.** A second overlay id per battle view; showing a battle view outside `refreshBattle`'s
-switch; constructing the tactical roots at boot; a renderer switch that pops the dialogue frame (a
-server conversation suspended over the battle base stays) or that demotes a visible shell when one
-batch fails to build; a fallback renderer for an anchor without its tactical row.
+**Rules out.** A second overlay id per battle view; showing a battle view outside the switch;
+constructing the tactical roots at boot; a renderer switch that pops the dialogue frame (a server
+conversation suspended over the battle base stays) or that demotes a visible shell when one batch
+fails to build; a fallback renderer for an anchor without its tactical row.
+
+The switch, the predicate and the readers of the shown view: `ARCHITECTURE.md` "Client", UI.
 
 ## game-core is mutation-gated nightly, the server on the lines a pull request changes
 
-**Decision.** `mutation` (game-core, nightly) runs as six cargo-mutants `--shard k/n` jobs, each
-its own zero-tolerance verdict. The server's zero-tolerance gate is the pull-request job
-`mutation-diff` (`just mutate-diff origin/master monster-realm-module`): it mutates the
-server-module lines the change adds or edits, diffed from the merge base, and a survivor fails
-it. The full server sweep, `mutation-server` (eight shards), runs weekly and files its survivors
-as one issue on the default branch; survivors fail nothing, and a shard is red only when
-cargo-mutants gave no verdict. A survivor is killed by a test or, if provably equivalent (no
-input distinguishes it), excluded in `.cargo/mutants.toml` with the written proof. The bodies of
-the four logging functions (`guards::log_reject`, `guards::json_escape`, `observability::mr_log`,
-`mr_log_breadcrumb`) are excluded by name; their direct tests stay.
+**Decision.** game-core's mutation run is nightly and sharded, and each shard is its own
+zero-tolerance verdict. The server's zero-tolerance gate is a pull-request job: it mutates the
+server-module lines the change adds or edits, diffed from the merge base, and a survivor fails it.
+The full server sweep runs weekly and files its survivors as one issue on the default branch;
+survivors fail nothing, and a shard is red only when it gave no verdict. A survivor is killed by a
+test or, if provably equivalent (no input distinguishes it), excluded with the written proof. The
+bodies of the four logging functions are excluded by name; their direct tests stay.
 
 **Accepted gaps.** The diff gate selects mutants only on lines a change adds or edits, so a test
 weakened or deleted with no server source line changed passes it, and so does a change that only
@@ -1658,308 +1629,301 @@ deletes source lines; the weekly report is read for both. The escaping, the reje
 reserved-key guard in the logging bodies are held by their direct tests alone: no mutation run
 checks that those tests still catch a break in them.
 
-**Why.** The crates outgrew one serial job: nights of 2026-10-31, 11-01 and 11-04 were cancelled
+**Why.** The crates outgrew one serial job: the nights of 2026-10-31, 11-01 and 11-04 were cancelled
 at GitHub's 6 h cap. A count cap hides regressions (kill one, add one, same number) and rewards
 raising it. A nightly full-sweep verdict lands after the merge, on whoever is next; a diff verdict
-lands on the change that made the mutant, before it merges, and the eight-runner sweep then runs
-once a week instead of every night. A log line is a diagnostic, not a rule: losing or garbling
-one degrades what an operator sees, never a player's state, so the mutation gates judge rules.
+lands on the change that made the mutant, before it merges, and the eight-runner sweep then runs once
+a week instead of every night. A log line is a diagnostic, not a rule: losing or garbling one
+degrades what an operator sees, never a player's state, so the mutation gates judge rules.
 
 **Rules out.** Dropping mutants to fit the time limit; excluding a killable mutant outside the
 logging functions; a survivor count, budget or threshold on the server, or a committed survivor
 baseline file; a test that asserts only log text no tool parses.
 
+The jobs, their shards and the exclusion file: `ARCHITECTURE.md` "Verification layout".
+
 ## Menu chrome draws from `--mr-*` tokens; the listbox ring stays `#cc5500`
 
-**Decision.** Menu chrome takes its spacing, type, borders and colors from the `--mr-*` tokens in
-`client/src/styles.css`, the one home of their values. Spacing and type are rem, so a root scale
-reaches them. Frame, chip and banner border widths stay px (`--mr-border-width`,
-`--mr-border-thin`). Every color token has a `prefers-contrast: more` value in the sheet's last
-block. The target frame reads top to bottom as title bar, tab bar, a body that grows and scrolls and
+**Decision.** Menu chrome takes its spacing, type, borders and colors from the `--mr-*` tokens, whose
+values have one home, the client's style sheet. Spacing and type are rem, so a root scale reaches
+them. Frame, chip and banner border widths stay px. Every color token has a `prefers-contrast: more`
+value. The target frame reads top to bottom as title bar, tab bar, a body that grows and scrolls and
 an overlaid feedback strip, with the world's hint bar below; screens move onto it one at a time, so
 some still differ. New kit classes are named outside the `mr-frame`/`mr-shell` family. The dashed
 ring on a focused listbox or grid stays `#cc5500`; `--mr-focus` is for other focused controls.
 
 **Why.** Each menu had grown its own spacing and type, which players reported as inconsistent. A rem
 border lands on fractional device pixels at a continuous scale and shimmers. The listbox ring can
-cross the light active row, where `--mr-focus` measures about 1:1 and the focus-ring tests in
-`client/src/ui/overlayA11yWiring.test.ts` require 3:1.
+cross the light active row, where `--mr-focus` measures about 1:1 against the 3:1 a focus indicator
+needs.
 
 **Rules out.** New px spacing or font sizes in menu chrome; a color literal where a token has that
-role; a rem width on a frame, chip or banner border; a color token without a `more` value; moving
-the listbox ring onto `--mr-focus` while the active row keeps its light fill.
+role; a rem width on a frame, chip or banner border; a color token without a `more` value; moving the
+listbox ring onto `--mr-focus` while the active row keeps its light fill.
+
+The token sheet, the border tokens and the focus-ring contrast check: `ARCHITECTURE.md` "Client", UI.
 
 ## One viewport number scales the world by integers and the chrome continuously
 
-**Decision.** `viewportScale` (`client/src/render/viewport.ts`) is the single scale authority. It
-returns the integer `deviceScale` the world renders at, and the continuous `uiScale`, the shorter
-CSS axis over 720 clamped to [0.875, 3]. `installResizeHandler` writes `uiScale` to `--mr-ui-scale` on
-`documentElement` at the same event that resizes the renderer, and the one root rule,
-`:root[style*="--mr-ui-scale"] { font-size: calc(100% * var(--mr-ui-scale) * var(--mr-text-step, 1)); }`,
-carries it to every rem token. Until the first write the rule does not match, so the root stays at 100%, a
-scale of 1. The player's text size (uif-13: ×1, ×1.5 or ×2 from Controls › Display, `client/src/ui/displayPrefs.ts`)
-is the second factor, written as `--mr-text-step` at import, before the seam's first write; it never moves
-`uiScale` or `deviceScale`.
+**Decision.** One pure function is the single scale authority. It returns the integer device scale
+the world renders at, and a continuous chrome scale from the shorter CSS axis, clamped. The chrome
+scale is written to the root font size at the same event that resizes the renderer, so every rem
+token follows it; until the first write the root stays at 100%, a scale of 1. The player's text size
+is a second factor on the root; it never moves either scale.
 
 **Why.** Playtest 3 read the snapping world and the smoothly growing menu as two competing methods
 (#586 D1). Each half needs its own rounding: a fractional stage scale blurs the pixel art, and a
-snapped chrome jumps between sizes. `uiScale` uses CSS pixels only, so a dpr change leaves the chrome
-alone, and `100%` keeps the browser's font-size preference in the product. `world.ts` is untouched
-because it already reads the same pure function at the same event, so the smoothness contract does
-not move. Borders stay px tokens so they land on whole device pixels. The selector is keyed on the
-write because happy-dom cannot compute rem through a `calc()` root font-size (it reads `NaNpx`), and
-suites such as `frame.test.ts` load the real sheet without the seam.
+snapped chrome jumps between sizes. The chrome scale uses CSS pixels only, so a dpr change leaves the
+chrome alone, and `100%` keeps the browser's font-size preference in the product. The world reads
+the same function at the same event, so the smoothness contract does not move. Borders stay px
+tokens so they land on whole device pixels. The root rule matches only after the first write
+because the client's DOM test environment cannot compute rem through a `calc()` root font-size, and
+some suites load the real sheet without the resize seam.
 
 **Rules out.** A fixed-ratio letterbox: the visible tile count and the map margin absorb the
-remainder, because a box would change how much world each window shows. Integer snapping of
-`uiScale`, a second scale calculation elsewhere, and a px root size, which would override the
+remainder, because a box would change how much world each window shows. Integer snapping of the
+chrome scale, a second scale calculation elsewhere, and a px root size, which would override the
 player's browser font setting. A dpr change with no size change fires no `resize` in Chromium, and
 the seam stays resize-driven, so the world catches up at the next resize.
 
+The scale function, the root rule and the text-size factor: `ARCHITECTURE.md` "Client", Rendering.
+
 ## Four message channels, chosen by one policy table
 
-**Decision.** Every message the client shows has a `MessageKind`, and `client/src/ui/feedbackPolicy.ts`
-assigns each kind to one of four channels. The **hint line** is a frame's feedback strip, or the world
-line (`#status`) when no frame hosts it. The **toast** is one timed `.mr-toast` region (`ui/toast.ts`)
-for outcomes. The **modal** is a confirm sheet for decisions. The **blocking text box** is the dialogue.
-The table is a `satisfies Record<MessageKind, PolicyRow>`, so a kind with no channel fails typecheck.
-The sinks are in `client/src/shell/feedback.ts`: `route` shows a message on its kind's channel, and
-`reportError` adds the console line and the error ring. The senders go through them: `sendGuarded`
-in `client/src/shell/session.ts` names a kind per send site (`SEND_REJECT_KIND`), `main.ts`'s care,
-shop and rename outcomes name a kind, and its battle refusal paints the toast and is announced at
-once. A toast is announced once
-through `#a11y-live` (the notice pump) and hides after `TOAST_MS` of the frame clock. A persistent
-hint follows the top frame (WF1-A9). On the main menu's strip it outranks the menu's own line: an
-action-required hint comes first, then a persistent state, then a disabled reason, then a
-Y-description. Otherwise it sits on
-`#status`, which is layered above every shell and below the toast. The strip is an overlay with zero
-layout height: its height and negative bottom margin cancel, it sits in a 2rem bottom reserve on
-`.mr-frame` and `.mr-shell`, and it is sticky with `bottom: -2rem`, because Chromium measures sticky
-offsets inside the scroller's padding.
+**Decision.** Every message the client shows has a message kind, and one policy table assigns each
+kind to one of four channels. The **hint line** is a frame's feedback strip, or the world line when
+no frame hosts it. The **toast** is one timed region for outcomes. The **modal** is a confirm sheet
+for decisions. The **blocking text box** is the dialogue. The table is total over the kinds, so a
+kind with no channel fails typecheck. Senders go through one routing module and name a kind at the
+send site; a battle refusal paints the toast directly and is announced at once. A toast is announced
+once through the one live region and hides after a fixed time on the frame clock. A persistent hint
+follows the top frame. On the main menu's strip it outranks the menu's own line: an action-required
+hint comes first, then a persistent state, then a disabled reason, then a Y-description. Otherwise
+it sits on the world line, which is layered above every shell and below the toast. The strip is an
+overlay with no layout height.
 
 **Why.** Playtest 3 found that the old strip pushed the frame's content when it appeared (058). It
 also found that the status line painted under every shell, so a rejection sent from the Monsters
 sheet, or a disconnect, never reached a player with a frame open. One table means a view never
 chooses its own channel, and the wireframes' channel table is checkable against the code. A toast is
-never the only carrier of something the player must act on. An action-required toast row names the
-on-screen state that also carries it, and the policy test pins that list.
+never the only carrier of something the player must act on: an action-required toast kind names the
+on-screen state that also carries it.
 
 **Rules out.** A per-view channel choice. Holding a battle refusal until the battle ends: it is a
 timed toast now. A second live region: the toast is not one. New `.mr-frame*` or `.mr-shell*`
 selectors for the strip. A multi-line strip: a long hint ends in an ellipsis and the live region
-still says all of it. Frames whose strip is still view-owned (boxView, raisingView, and the per-view
-lines that uif-4b moves) carry a persistent hint on the raised world line until their strips join
-the seam.
+still says all of it. A frame whose strip its own view still owns carries a persistent hint on the
+raised world line until its strip joins the routing module.
+
+The routing module, the strip's layout and the policy test: `ARCHITECTURE.md` "Client", UI.
 
 ## The Monsters action sheet is one corner-anchored ContextSheet; Summary is a page in the frame
 
-**Decision.** A Monsters frame has one `ContextSheet` (`createContextSheet`, `client/src/ui/contextSheet.ts`,
-root `[data-context-sheet]`), mounted in the tab content area `#monsters-panel` (`position:relative`,
-`client/src/ui/boxView.ts`). `anchorSheet` puts it in a bottom corner away from the cursor cell, the top
-corner if the bottom would touch that cell, else height-capped and scrolling. Nothing is dimmed; the tabs
-and grid stay live. It is re-placed on every paint and on panel resize. One content shows at a time: the
-sheet's rows, a sub-list (Feed…, Evolve…) or the Evolve confirm, all in the same root. Every row id is
-`monstersSheet-root-<key>`; the heading keeps `monsters-sheet-name`. The sheet ends with Close, each
-sub-list with Back (key `back`, `BACK_KEY` in `client/src/ui/monstersModel.ts`). A on either is B's step;
-a held A does nothing. Summary is a page in the frame that replaces both grids, with the tabs kept. It is
-not a sheet and adds no `OverlayId`. B or A returns to the sheet on the same monster; LB/RB close it to the
-list on that tab, since a tab click has no sheet close before it.
+**Decision.** A Monsters frame has one context sheet, mounted in the tab content area. It sits in a
+bottom corner away from the cursor cell, the top corner if the bottom would touch that cell, else
+height-capped and scrolling. Nothing is dimmed; the tabs and grid stay live. It is re-placed on every
+paint and on panel resize. One content shows at a time: the sheet's rows, a sub-list (Feed…,
+Evolve…) or the Evolve confirm, all in the same root. The sheet ends with Close, each sub-list with
+Back. A on either is B's step; a held A does nothing. Summary is a page in the frame that replaces
+both grids, with the tabs kept. It is not a sheet and adds no overlay id. B or A returns to the sheet
+on the same monster; LB/RB close it to the list on that tab, since a tab click has no sheet close
+before it.
 
-**Why.** A sheet wedged between tabs and panels read as a stray panel (feedback 047). A fixed single corner
-covers the selected slot for some slots. Beside-the-slot moves with every slot, and in-slot buttons break on
-the grid, so only the detail page was adopted (wf-1, M-ui-foundation-wireframes.md "Verdict: sheet placement"). A
-page gives Summary room for all stats without a second overlay.
+**Why.** A sheet wedged between tabs and panels read as a stray panel (feedback 047). A fixed single
+corner covers the selected slot for some slots. Beside-the-slot moves with every slot, and in-slot
+buttons break on the grid, so the wireframe study's verdict on sheet placement adopted only the
+detail page. A page gives Summary room for all stats without a second overlay.
 
-**Rules out.** A fixed corner, beside-the-slot placement, in-slot buttons, a dim layer, a second sheet
-root per sub-list, and a Summary implemented as a sheet or an overlay. Later sheets (Inventory uif-8,
-Social uif-9) reuse this placement and the `kit.sheet.close` / `kit.sheet.back` rows. The Social row
-sheet ends with Back, not Close (`BACK_KEY` of `client/src/ui/monstersModel.ts`, appended in
-`client/src/ui/screens/socialScreen.ts` and `client/src/ui/tradeView.ts`): it opens from a row of the
-Social list, and A on Back returns to that list with nothing sent. The world sheets (uif-12) reuse the
-Close row but keep their own anchor (see "Select is Help everywhere; a world sheet closes under it and
-ends with a Close row").
+**Rules out.** A fixed corner, beside-the-slot placement, in-slot buttons, a dim layer, a second
+sheet root per sub-list, and a Summary implemented as a sheet or an overlay. The Inventory and Social
+sheets reuse this placement and the kit's Close and Back rows. The Social row sheet ends with Back,
+not Close: it opens from a row of the Social list, and A on Back returns to that list with nothing
+sent. The world sheets reuse the Close row but keep their own anchor, under the interaction prompt.
+
+The sheet's placement, ids and Back rows: `ARCHITECTURE.md` "Client", UI.
 
 ## Select is Help everywhere; a world sheet closes under it and ends with a Close row
 
 **Decision.** Select opens Help over the bare world and over every world sheet: a fresh Select over a
-sheet closes it and falls through to the base, which answers `toggleHelp` (`worldButton` in
-`client/src/ui/screens/worldScreen.ts`, `baseButton` in `client/src/ui/screens/index.ts`); a held Select
-is consumed and changes nothing. The world sheets (the entity × action picker and the Y action sheet of
-`client/src/ui/actionSheetModel.ts`, the Accept / Decline / View request sheet of
-`client/src/ui/noticeModel.ts`, the Challenge party-size confirm) paint as the kit's `ContextSheet` (root
-`[data-context-sheet]`) inside `#interact-prompt`, hung where the prompt hangs; `placeContextSheet` is
-not used for them. That root is what lets the pointer source click a row and close the sheet from a click
-elsewhere. Every picker, action sheet and request sheet ends with a Close row (`CLOSE_KEY`, painted with
-`kit.sheet.close`): a layout row, not a `SheetEntry`, whose A is exactly B's step, so the sheet closes
-and nothing runs or is answered. The Challenge confirm keeps `No` last and gets no Close row. The hint
-bar reads A OK (Choose beside a multi-row picker), B Back, Start Close, Select Help over every world
-sheet.
+sheet closes it and falls through to the base, which opens Help; a held Select is consumed and
+changes nothing. The world sheets (the entity × action picker and the Y action sheet, the Accept /
+Decline / View request sheet, the Challenge party-size confirm) paint as the kit's context sheet
+inside the interaction prompt, hung where the prompt hangs, and are not re-placed by the corner
+anchor. That root is what lets the pointer source click a row and close the sheet from a click
+elsewhere. Every picker, action sheet and request sheet ends with a Close row: a layout row, not a
+sheet entry, whose A is exactly B's step, so the sheet closes and nothing runs or is answered. The
+Challenge confirm keeps No last and gets no Close row. The hint bar reads A OK (Choose beside a
+multi-row picker), B Back, Start Close, Select Help over every world sheet.
 
-**Why.** An earlier rule let an open sheet swallow Select, so the hint bar's Select Help chip lied over
-every sheet. What that rule guarded against was Help opening under the sheet; closing the sheet first
-keeps that guarantee and makes Select one action everywhere. The Close row exists because a pointer
-player has no B: the chip-only prompt is `pointer-events:none`, so a world sheet could only be left from
-the keyboard (playtest 3 feedback). The confirm already has an exit row, No; a second one would make its
-shape ambiguous.
+**Why.** An earlier rule let an open sheet swallow Select, so the hint bar's Select Help chip lied
+over every sheet. What that rule guarded against was Help opening under the sheet; closing the sheet
+first keeps that guarantee and makes Select one action everywhere. The Close row exists because a
+pointer player has no B: the chip-only prompt takes no pointer events, so a world sheet could only be
+left from the keyboard (playtest 3 feedback). The confirm already has an exit row, No; a second one
+would make its shape ambiguous.
 
 **Rules out.** A world sheet that swallows Select; Help pushed over an open world sheet; a Close row
-modelled as a candidate action or `SheetEntry` (it would need a candidate and count toward the Choose
-verb); a Close row on the Challenge confirm; re-anchoring a world sheet with `placeContextSheet` (it must
-stay where the faced thing is); promoting a world sheet to a frame or `OverlayId` (a request is a
-non-modal banner and world sheet, never a frame: "Client UI: virtual buttons, one context stack, one
-overlay frame").
+modelled as a candidate action or sheet entry (it would need a candidate and count toward the Choose
+verb); a Close row on the Challenge confirm; re-anchoring a world sheet with the corner anchor (it
+must stay where the faced thing is); promoting a world sheet to a frame or overlay id (a request is a
+non-modal banner and world sheet, never a frame).
+
+The world sheets' models, the Close row and Select's fall-through: `ARCHITECTURE.md` "Client", UI.
 
 ## Profile is one dialog; the rename, claim and privacy views are its sections
 
-**Decision.** Profile is ONE overlay, `profileView` (`client/src/ui/profileView.ts`): it owns the frame
-root, the title, a body that scrolls under it, the Close row, the a11y open and close (one role, one
-label, one focus trap) and the one column of rows the D-pad walks. Its initial-focus anchor is the name
-field; an open on Account or Privacy seats that section's row at once instead. `renameView.ts`,
-`claimView.ts` and `privacyView.ts` keep their files, models, handlers and element ids but are sections:
-they hold no a11y of their own, are shown and hidden only through the frame, and are not `OverlayId`s
-(`OVERLAY_IDS` is 16; `OR-MANIFEST-COMPLETE` in `overlayRegistry.test.ts` names the three files as an
-exclusion). The frame takes the strictest row of the three it replaced in every table: `SCREEN_POLICY`
-player / drop, and `RECONNECT_CLOSES` true (rename's, so a reconnect closes it, and `onReconnect` shows
-a claim prompt its own cycle raised again after the sweep). N and C are two accelerators onto the one
-frame, the section carried as the path's `tab`; with Profile on top, the one whose section does not hold
-the cursor moves it there. Every close (B, Start, the Close row, a battle, a conversation, a reconnect)
-runs each section's `hide()`, which disarms BOTH two-step confirms (the deletion's, and since this
-change the claim decline's); a move that enters a section whose confirm is armed lands on its No. The
-`privacy-busy` message kind is gone: the privacy surface no longer opens over anything.
+**Decision.** Profile is one overlay: it owns the frame root, the title, a body that scrolls under it,
+the Close row, the accessibility open and close (one role, one label, one focus trap) and the one
+column of rows the D-pad walks. Its initial-focus anchor is the name field; an open on Account or
+Privacy seats that section's row at once instead. The rename, claim and privacy views keep their
+files, models, handlers and element ids but are sections: they hold no accessibility of their own,
+are shown and hidden only through the frame, and are not overlay ids. The frame takes the strictest
+row of the three it replaced in every table: a player frame that a battle drops, and one a reconnect
+closes (after the sweep, the reconnect shows a claim prompt its own cycle raised again). N and C are
+two accelerators onto the one frame, the section carried as the path's tab; with Profile on top, the
+one whose section does not hold the cursor moves it there. Every close (B, Start, the Close row, a
+battle, a conversation, a reconnect) runs each section's hide, which disarms both two-step confirms,
+the deletion's and the claim decline's; a move that enters a section whose confirm is armed lands on
+its No. The privacy section opens over nothing, so no overlay-busy refusal guards it.
 
-**Why.** The operator's complaint was three sparse full screens behind a sub-list (playtest 3, #586 D3).
-Tabs would have kept three sparse pages. Three dialogs cannot be visible sections of one screen, because
-two open focus traps cannot coexist; the Social frame's one-panel-at-a-time trick shows one panel, not
-three. A decline has to disarm on close, and No has to be where the cursor enters, because one column
-puts an armed "Yes" directly under the name field, where Escape or one Down would land on it.
+**Why.** The operator's complaint was three sparse full screens behind a sub-list (playtest 3, #586
+D3). Tabs would have kept three sparse pages. Three dialogs cannot be visible sections of one screen,
+because two open focus traps cannot coexist; the Social frame's one-panel-at-a-time trick shows one
+panel, not three. A decline has to disarm on close, and No has to be where the cursor enters,
+because one column puts an armed "Yes" directly under the name field, where Escape or one Down would
+land on it.
 
-**Rules out.** Giving a section its own `openOverlayA11y`, role or frame classes; showing or hiding a
-section alone (a section's own Escape, a per-section reset in `RECONNECT_RESETS`); a Profile sub-list or
-Profile tabs; a second always-enabled anchor inside the Privacy section (the frame's Close is the reseat
-target when a render refuses the focused control: `fallbackRow`); leaving either confirm armed behind a
-closed frame; the list scroll cue `.mr-scroll` on the body (its gradients sit behind running text, where
-contrast cannot be measured); re-adding an overlay-busy refusal for privacy.
+**Rules out.** Giving a section its own accessibility open, role or frame classes; showing or hiding
+a section alone (a section's own Escape, a per-section reconnect reset); a Profile sub-list or
+Profile tabs; a second always-enabled anchor inside the Privacy section (the frame's Close is the
+reseat target when a render refuses the focused control); leaving either confirm armed behind a
+closed frame; the list scroll cue on the body (its gradients sit behind running text, where contrast
+cannot be measured); re-adding an overlay-busy refusal for privacy.
+
+The frame, its sections and the tables it sits in: `ARCHITECTURE.md` "Client", UI.
 
 ## Every served asset carries a provenance row; image-model output never ships
 
-**Decision.** Every PNG served from `client/public/assets/` has exactly one row in the art registry
-(`ART_REGISTRY` in `client/src/render/art/registry.ts`, aggregated from one pack file per asset family in
-`client/src/render/art/packs/`). A row records the stable atlas key, file, kind, sheet and frame size,
-scale, source (the generator path, or the pack's URL), license and provenance tag, and it lands in the same
-change as its file. The row type accepts only the licenses `project-original`, `CC0-1.0` and
-`CC-BY-4.0`/`CC-BY-3.0`, and a CC-BY row must carry an attribution. It accepts only the provenance tags
-`placeholder-procedural`, `placeholder-licensed` and `final`. The `ai-placeholder` tag, share-alike and
-EULA licenses cannot be written. `validateArtRegistry` rejects what the type cannot express: a duplicate
-key or file, a sprite, tile or normal frame off the 16 px grid, a scale other than 1, a malformed key and
-an empty attribution. Its colocated test runs the validator over the real rows and checks each row against
-the served directory and the PNG headers. Image-model output is for ideation only and never ships. The art
-rules live in `docs/art/style-guide.md`.
+**Decision.** Every PNG the client serves has exactly one row in the art registry, which lands in the
+same change as its file and records where the file came from, its license and its provenance tag.
+The row type accepts only the licenses `project-original`, `CC0-1.0` and `CC-BY-4.0`/`CC-BY-3.0`,
+and a CC-BY row must carry an attribution. It accepts only the provenance tags
+`placeholder-procedural`, `placeholder-licensed` and `final`. The `ai-placeholder` tag, share-alike
+and EULA licenses cannot be written. A validator rejects what the type cannot express, and a check
+holds the rows against the served directory and the PNG headers. Image-model output is for ideation
+only and never ships. The art rules live in `docs/art/style-guide.md`.
 
-**Why.** Every served asset is a placeholder until an artist is hired. Without a record of where each file
-came from, a placeholder that a license does not allow us to ship, or image-model output, could reach a
-release without anyone noticing. Keys stay stable so final art is a file swap. Before this, the repo had no
-provenance, credits or asset-license file, and one wave of monster sheets came from a generator that has
-since been deleted. Their rows cite it as `<path>@<commit>`.
+**Why.** Every served asset is a placeholder until an artist is hired. Without a record of where each
+file came from, a placeholder that a license does not allow us to ship, or image-model output, could
+reach a release without anyone noticing. Keys stay stable so final art is a file swap.
 
-**Rules out.** Serving a file without a registry row; a row tagged `ai-placeholder`; share-alike or EULA
-assets until counsel signs off; renaming an atlas key to swap art; asserting a file count in place of the
-directory-against-registry check. A release gate that every row is `final` is deferred to the launch
-checklist.
+**Rules out.** Serving a file without a registry row; a row tagged `ai-placeholder`; share-alike or
+EULA assets until counsel signs off; renaming an atlas key to swap art; asserting a file count in
+place of the directory-against-registry check. A release gate that every row is `final` is deferred
+to the launch checklist.
+
+The registry, its row fields and the validator: `ARCHITECTURE.md` "Client", Rendering (Art registry).
 
 ## The frame loop is the only thing that draws; the sprite batcher samples at most four textures
 
-**Decision.** Pixi's own render ticker is stopped (`autoStart: false` in `appInitOptions`).
-`WorldRenderer.render` draws once at the end of each frame-loop frame, and `WorldRenderer.resize` draws
-because a resize clears the canvas. The renderer caps `renderer.limits.maxBatchableTextures` at
-`MAX_BATCH_TEXTURES` (4) after init and again after every WebGL context restore, because Pixi re-reads the
-limit from the device on a context change. On a context restore it also re-bakes the terrain chunk
-textures and drops the generated placeholder character textures (`AssetProvider.contextRestored`), since a
-rendered texture comes back empty. `client/e2e/render-context.spec.ts` loses and restores the context in a
-real browser and compares the canvas before and after, and counts one canvas clear per animation frame.
+**Decision.** Pixi's own render ticker is stopped. The renderer draws once at the end of each
+frame-loop frame, and a resize draws because a resize clears the canvas. The sprite batcher is capped
+at four textures after init and again after every WebGL context restore, because Pixi re-reads the
+limit from the device on a context change. On a context restore the renderer also re-bakes the
+terrain chunk textures and drops the generated placeholder character textures, since a rendered
+texture comes back empty.
 
-**Why.** Pixi's batch fragment shader chooses its texture with an if/else chain as long as the batch limit,
-evaluated for every covered pixel. A hardware GPU does not notice. A software rasteriser (SwiftShader:
-headless CI, and any player whose browser has no usable GPU) reports a limit of 32 and pays for the whole
-chain per pixel, so the cost grows with how much of the canvas the map covers. Measured in headless Chromium
-on 2 cores at 1280x720 (medians of 3 interleaved blocks; Pixi's own ticker and device limit of 32 against
-this configuration): on a 10x7 zone, idle browser CPU is 118% against 63%; on a 28x20 zone that fills the
-canvas it is 177% against 107%, the frame rate 39 against 60 fps, and the median CDP key acknowledgement 25
-ms against 4.9 ms. Pixels are identical; the larger zone takes 2 draw calls where the device limit takes 1.
-The cap covers the sprite batcher, which draws the whole kit-atlas world; the flat-terrain fallback's large
-`Graphics` uses a separate Pixi shader built at the device limit before the cap can apply. With Pixi's
-ticker running beside the frame loop, Pixi draws the state the loop resolved on the PREVIOUS animation
-frame; with one owner a frame is presented in the task that resolved it. Without the re-bake, the terrain
-stays blank after a context restore (30% of the canvas on the small zone, 98% on the large one).
+**Why.** Pixi's batch fragment shader chooses its texture with an if/else chain as long as the batch
+limit, evaluated for every covered pixel. A hardware GPU does not notice. A software rasteriser
+(SwiftShader: headless CI, and any player whose browser has no usable GPU) reports a limit of 32 and
+pays for the whole chain per pixel, so the cost grows with how much of the canvas the map covers.
+Measured on 2026-11-10 in headless Chromium on 2 cores at 1280x720, this configuration against Pixi's
+own ticker at the device limit of 32 took idle browser CPU from 118% to 63% on a 10x7 zone and from
+177% to 107% on a 28x20 zone that fills the canvas, where the frame rate rose from 39 to 60 fps and
+the median key acknowledgement fell from 25 ms to 4.9 ms, with identical pixels. The cap covers the
+sprite batcher, which draws the whole kit-atlas world, and not the flat-terrain fallback, whose shader
+is built at the device limit before the cap applies. With Pixi's ticker running beside the frame
+loop, Pixi draws the state the loop resolved on the previous animation frame; with one owner a frame
+is presented in the task that resolved it. Without the re-bake, the terrain stays blank after a
+context restore (30% of the canvas on the small zone, 98% on the large one, the same day).
 
-**Rules out.** Starting `app.ticker`, or adding a second `requestAnimationFrame` loop that draws; a
-canvas-clearing operation that does not draw afterwards; raising `MAX_BATCH_TEXTURES` without re-measuring
-under SwiftShader; a new `generateTexture` result that is not rebuilt on `webglcontextrestored`.
+**Rules out.** Starting Pixi's ticker, or adding a second `requestAnimationFrame` loop that draws; a
+canvas-clearing operation that does not draw afterwards; raising the texture cap without re-measuring
+under SwiftShader; a new generated texture that is not rebuilt on a context restore.
+
+The ticker, the cap and the restore path: `ARCHITECTURE.md` "Client", Rendering.
 
 ## The client builds for ES2022; the wasm import is a native top-level await
 
-**Decision.** `client/vite.config.ts` sets `build.target: 'es2022'` and uses no top-level-await
-transform. The wasm-pack `bundler` package is resolved by `vite-plugin-wasm`, and its async init is awaited
+**Decision.** The client's build targets `es2022` and uses no top-level-await transform. The
+wasm-pack `bundler` package is resolved by the bundler's wasm plugin, and its async init is awaited
 at module top level by the browser itself. The supported floor is every browser with ES2022 syntax:
 Chrome 94, Firefox 93, Safari 16.4.
 
-**Why.** A transform for older targets (`vite-plugin-top-level-await`) re-emits every chunk unminified, so
-the production bundle ships with its whitespace and long names. Measured on one commit, with the transform
-against without: the entry chunk is 1,219 kB against 794 kB raw (278 kB against 237 kB gzip) and all
-JavaScript 419 kB against 358 kB gzip; over 10 cold loads of the built client, script time to first idle is
-96 ms against 70 ms and the canvas appears at 277 ms against 244 ms. `es2022` produces the same bundle
-as `esnext` today, but `esnext` lowers nothing, so the floor would move with whatever syntax a dependency
-ships. The browsers below the floor date from 2021 or earlier and are out of vendor support.
+**Why.** A transform for older targets re-emits every chunk unminified, so the production bundle
+ships with its whitespace and long names. Measured on 2026-11-10 on one commit, the transform took
+the entry chunk from 794 kB to 1,219 kB raw (237 kB to 278 kB gzip) and all JavaScript from 358 kB to
+419 kB gzip, and over 10 cold loads of the built client took script time to first idle from 70 ms to
+96 ms and the first canvas from 244 ms to 277 ms. `es2022` produces the same bundle as `esnext`
+today, but `esnext` lowers nothing, so the floor would move with whatever syntax a dependency ships.
+The browsers below the floor date from 2021 or earlier and are out of vendor support.
 
-**Rules out.** Re-adding a top-level-await transform; `build.target: 'esnext'`; lowering `build.target`
-below a level with native top-level await while the wasm package is built for the `bundler` target.
+**Rules out.** Re-adding a top-level-await transform; `build.target: 'esnext'`; lowering
+`build.target` below a level with native top-level await while the wasm package is built for the
+`bundler` target.
+
+The build configuration: `ARCHITECTURE.md` "Client".
 
 ## The world post stack is `pixi-filters`, on the world layer only, planned from injected time
 
-**Decision.** The post stack uses four filters from `pixi-filters` (pinned exactly, `6.1.5`, imported by
-subpath: `simple-lightmap`, `advanced-bloom`, `godray`, `color-map`). `planPostStack`
-(`client/src/render/postStack.ts`) is a pure function. Its inputs are the pass toggles, an injected `nowMs`,
-the reduced-motion bit, a time-of-day keyframe, the renderer's device-pixel resolution and what the renderer
-supports. It returns the passes to run, in a fixed order, each with its filter's constructor options;
-a disabled pass is left out of the plan rather than zeroed. `WorldRenderer` builds exactly those filters and
-attaches them to one container holding the terrain, decor and actor layers, never to the stage or the DOM UI.
-Each filter runs at the renderer's resolution and the LUT samples `nearest`. The godray time is
-`godrayTime(nowMs, reduceMotion)`: the injected clock, held at 0 while reduced motion is set. No filter reads a
-wall clock or `Math.random`. Three things disable the whole stack: an unsupported renderer, a pass whose
-construction throws, and a throw from the probe frame drawn after the stack is built. In each case the plan is
-empty with one warning, and the world draws unfiltered. A driver that fails a shader without throwing is not
-detected. The renderer starts with the stack off at the `day` keyframe, and `setPostStack` turns passes on.
-A production build that turns the stack on must keep it off on a software rasteriser, recognised from the
-WebGL renderer string (`UNMASKED_RENDERER_WEBGL`) read at init and again after a context restore: a string
-naming SwiftShader or llvmpipe, in any letter case, would be one more reason for the empty plan and its
-warning. A string that names neither, or that the browser masks, counts as hardware, so another software
-rasteriser runs the stack until it is measured and added to the check's list. No production build turns the
-stack on, so the check is not written.
+**Decision.** The post stack uses four filters from `pixi-filters`, pinned exactly and imported by
+subpath: a lightmap, bloom, godray and a color-map LUT. One pure function plans it from the pass
+toggles, an injected clock, the reduced-motion bit, a time-of-day keyframe, the renderer's
+device-pixel resolution and what the renderer supports, and returns the passes to run in a fixed
+order with their options; a disabled pass is left out of the plan rather than zeroed. The renderer
+builds exactly those filters on the one container holding the terrain, decor and actor layers,
+never on the stage or the DOM UI. Each filter runs at the renderer's resolution, and the LUT samples
+nearest. The godray time is the injected clock, held at 0 while reduced motion is set; no filter
+reads a wall clock or `Math.random`. An unsupported renderer, a pass whose construction throws, or a
+throw from the probe frame drawn after the build disables the whole stack: the plan is empty with
+one warning, and the world draws unfiltered. A driver that fails a shader without throwing is not
+detected. The renderer starts with the stack off at the `day` keyframe, and the live game keeps it
+off. A production build that turns the stack on must keep it off on a software rasteriser,
+recognised from the WebGL renderer string read at init and again after a context restore: a string
+naming SwiftShader or llvmpipe, in any letter case, would be one more reason for the empty plan and
+its warning. A string that names neither, or that the browser masks, counts as hardware, so another
+software rasteriser runs the stack until it is measured and added to the check's list. No production
+build turns the stack on, so the check is not written.
 
-**Why.** `pixi-filters` was the vetted USE verdict for this stack (`docs/research/pixijs-ecosystem-ui-and-assets.md`
-§0/§6 in the harness). It is MIT-licensed, has no install scripts, and its single runtime dependency is a types
-package. It ships WebGL and WebGPU programs for all four passes, which saves writing and maintaining four
-shaders. With the exact pin, an upgrade is a deliberate lockfile change, and the subpath imports name the four
-filters in use. Filtering the world container alone keeps the UI unfiltered. The world's tile
-edges stay one-pixel hard steps because every pass renders on the device-pixel grid. A filter below the
-renderer's resolution would be resampled, and the chain runs at the lowest resolution of any of its filters.
-Injected time keeps two frames with the same inputs pixel-identical, which is what the look-dev scene asserts.
-Measured on software GL at 1280×720 (`docs/art/style-guide.md` §Post stack), the four passes cost 35.1
-ms/frame against 2.0 ms unfiltered, and godray and bloom account for most of it. That is the reason for the
-software-rasteriser rule: with the stack on, the live client misses the 55 fps frame-rate objective on
-SwiftShader and on llvmpipe, and meets it on both GPUs of the same host at 1280×720 (§Low-end frame times). The
-renderer string decides it because the plan can take it as an input a unit test supplies. The rule stops at
-software rasterisers: through WSL2's D3D12 layer the host's integrated Radeon also misses the objective with the
-stack on at 1920×1080 and above, so a build that turns the stack on also needs a bound for a weak hardware GPU,
-which this entry does not set. A canvas clear per filter pass also breaks the one-clear-per-frame count in
-`client/e2e/render-context.spec.ts`. So the live game keeps the stack off.
+**Why.** `pixi-filters` was the vetted choice of the PixiJS ecosystem review. It is MIT-licensed, has
+no install scripts, and its single runtime dependency is a types package. It ships WebGL and WebGPU
+programs for all four passes, which saves writing and maintaining four shaders. With the exact pin,
+an upgrade is a deliberate lockfile change, and the subpath imports name the four filters in use.
+Filtering the world container alone keeps the UI unfiltered. The world's tile edges stay one-pixel
+hard steps because every pass renders on the device-pixel grid. A filter below the renderer's
+resolution would be resampled, and the chain runs at the lowest resolution of any of its filters.
+Injected time keeps two frames with the same inputs pixel-identical, which is what the look-dev
+scene asserts. On software GL the stack costs many times an unfiltered frame, most of it godray and
+bloom (`docs/art/style-guide.md` §Post stack). That is the reason for the software-rasteriser rule:
+with the stack on, the live client misses the 55 fps frame-rate objective on SwiftShader and on
+llvmpipe, and meets it on both GPUs of the same host at 1280×720 (§Low-end frame times). The
+renderer string decides it because it is known before the first filtered frame, and the plan stays
+a pure function of its inputs. The rule stops at software rasterisers: through WSL2's D3D12 layer
+the host's integrated Radeon also misses the objective with the stack on at 1920×1080 and above, so a
+build that turns the stack on also needs a bound for a weak hardware GPU, which this entry does not
+set. A canvas clear per filter pass also breaks the frame loop's one-clear-per-frame check. So the
+live game keeps the stack off.
 
-**Rules out.** Filters on `app.stage`, on a DOM layer or per sprite; a pass kept in the chain at zero strength; a
-shader, filter or animation reading a clock other than the injected `nowMs`; a filter at a resolution below the
-renderer's; a linearly sampled LUT; adding another filter package without a new entry here; turning the stack
-on in a production build without the software-rasteriser check; recognising a software rasteriser from measured
-frame time (a clock in the plan, and the stack must run slow before it is measured);
-`failIfMajorPerformanceCaveat` in the check's place (headless Chromium created a context with it on both
-SwiftShader and llvmpipe); a player setting as the only guard.
+**Rules out.** Filters on the stage, on a DOM layer or per sprite; a pass kept in the chain at zero
+strength; a shader, filter or animation reading a clock other than the injected one; a filter at a
+resolution below the renderer's; a linearly sampled LUT; adding another filter package without a new
+entry here; turning the stack on in a production build without the software-rasteriser check;
+recognising a software rasteriser from measured frame time (a clock in the plan, and the stack must
+run slow before it is measured); `failIfMajorPerformanceCaveat` in the check's place (headless
+Chromium created a context with it on both SwiftShader and llvmpipe); a player setting as the only
+guard.
+
+The plan, its passes and the renderer's hooks: `ARCHITECTURE.md` "Client", Rendering (Post stack).
 
 ## The connection target is run-time configuration: a shell document set before the client module runs
 
