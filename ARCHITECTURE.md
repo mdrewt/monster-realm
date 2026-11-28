@@ -234,7 +234,7 @@ writes:
 | `accounts` | `start_guest_claim`, `complete_guest_claim`, `delete_account`, `cancel_account_deletion`, scheduled `guest_claim_reaper` and `account_deletion_reaper` |
 | `access` | `set_world_access` (owner-only): the world's access rule (`Open`, `Password` or `Allowlist`) and the admission list; `require_admitted` opens every non-owner-only client reducer but `unbind_world_account` |
 | `world_binding` | `request_bind_nonce`, `bind_world_account` and their owner-relayed forms `request_bind_nonce_for`, `bind_world_account_for`; `unbind_world_account`, the one client reducer outside the owner-only set with no admission check, which erases the caller's `world_account` row with its armed re-check, its binding and its nonce, and withdraws its admission row when a `world_account` row went; owner-only `set_world_names`, `set_world_allowlist` (the list holds handles) and `drop_world_binding` (the same erasure for a named identity; does not write the list). Owns `world_binding`, `world_bind_nonce`, `world_name` and `world_allowlist`, and verifies the attestation (`verify_attestation`), whose binding grants nothing; a build with no attestation key refuses the four nonce and bind reducers; `delist_account_of`, the deletion cascade's step, takes a deleted identity's handle off the list |
-| `account_checks` | procedures `check_account` (a client's one-use ticket), `check_account_for` (owner-only relay), scheduled `recheck_account` (the database only, armed by the connect reducer) and scheduled `host_account_check` (the database only: the account the world's host plays under): the world asks the account service the build names (`POST /world/check`, 3 s timeout) whether an account owns the game and stores the answer. Owns `world_account`, `world_check_budget` and `recheck_schedule`; `entitled` and the `Allowlist` rule read `world_account` |
+| `account_checks` | procedures `check_account` (a client's one-use ticket), `check_account_for` (owner-only relay), scheduled `recheck_account` (the database only, armed by the connect reducer) and scheduled `host_account_check` (the database only: the account the world's host plays under): the world asks the account service the build names (`POST /world/check`, 3 s timeout) whether an account owns the game and stores the answer. Owns `world_account`, `world_check_budget`, `recheck_schedule`, `world_move`, `world_egress` and `host_check_schedule`; `entitled` and the `Allowlist` rule read `world_account` |
 | `privacy` | `request_data_export`, scheduled `export_bundle_reaper` |
 | `observability` | scheduled `mr_heartbeat` |
 | `playtest` | scheduled `playtest_reaper` |
@@ -294,20 +294,21 @@ past `MAX_ITEM_STACK` or `MAX_BALANCE` is refused before anything moves (`check_
   the conversation, character and player rows. As it deletes the character it saves
   the character's zone, tile and facing in the private `last_position` table
   (`movement::save_last_position`).
-- Schedules. In a world with nobody connected the one schedule that keeps running is the
-  60 s `mr_heartbeat`, which writes no row. Every reaper is a one-shot armed when something is
-  owed. One that serves an entity (a trade offer, a challenge, an account deletion) has a row
-  per entity at its deadline. `playtest_reaper` and `export_bundle_reaper` bound a table by age
+- Schedules. In a world with nobody connected the schedules that keep running are the 60 s
+  `mr_heartbeat`, which writes no row, and, once the host has marked its own account, the
+  hourly `host_account_check` tick. Every reaper is a one-shot armed when something is owed.
+  One that serves an entity (a trade offer, a challenge, an account deletion) has a row per
+  entity at its deadline. `playtest_reaper` and `export_bundle_reaper` bound a table by age
   and have at most one row for the whole table, at the oldest row's expiry: the insert arms
   it, the reaper re-arms it from the rows it leaves, and an empty table has none. Each has a
   fixed delay (300 s and 3600 s), and a run arms its next run no sooner than that delay from
   now, so it runs at most once per delay; work owed at once (a table over its cap, a backlog
-  one run could not finish) waits that delay too. `battle_summary_reaper` bounds its table by
-  row count in the same shape (see "Schema and privacy model"). The runtime consumes a
-  one-shot row even when its reducer's transaction fails, and the re-arm rolls back with that
-  transaction, so a failed run leaves nothing armed until the next write to the table (a
-  recruit attempt for `playtest_event`; an export request or a purge for `export_bundle`),
-  `init` or `sync_content` re-arms it from the table's true oldest row.
+  one run could not finish) waits that delay too. `battle_summary_reaper` bounds its table
+  by row count in the same shape (see "Schema and privacy model"). The runtime consumes a
+  one-shot row even when its reducer's transaction fails, and the re-arm rolls back with
+  that transaction, so a failed run leaves nothing armed until the next write to the table
+  (a recruit attempt for `playtest_event`; an export request or a purge for
+  `export_bundle`), `init` or `sync_content` re-arms it from the table's true oldest row.
   `docs/runbooks/observability-dr.md` says how to see that state.
 
 ### Movement
@@ -469,18 +470,19 @@ call or by the tick.
 
 ### Dev and load-test builds
 
-- **Features** (`server-module/Cargo.toml`). `dev_reducers` compiles `grant_bait` (`taming.rs`)
-  and `dev_expire_tactical_window` (`dev_clock.rs`); `load_test_zones`, which implies
-  `dev_reducers`, also compiles `dev_place_in_load_zone` (`load_dev.rs`). `dev_reducers` implies
-  `open_join`, and neither feature is ever in `default`. A release feature (`official` or
-  `world`) named with a dev-reducer feature does not compile, and `just release-module` refuses
-  an artefact that names a dev reducer or whose profile compiles one.
-- **Published-module checks.** The playtest recipes publish a build with no dev feature and then
-  check the *published* module with `spacetime describe --json`
+- **Features** (`server-module/Cargo.toml`). `dev_reducers` compiles `grant_bait`
+  (`taming.rs`) and `dev_expire_tactical_window` (`dev_clock.rs`); `load_test_zones`, which
+  implies `dev_reducers`, also compiles `dev_place_in_load_zone` (`load_dev.rs`).
+  `dev_reducers` implies `open_join`; `default` holds `open_join` and no dev-reducer
+  feature. A release feature (`official` or `world`) named with a dev-reducer feature does
+  not compile, and `just release-module` refuses an artefact that names a dev reducer or
+  whose profile compiles one.
+- **Published-module checks.** The playtest recipes publish the default build and then check
+  the *published* module with `spacetime describe --json`
   (`scripts/verify-release-reducers.mjs`, whose `FORBIDDEN_REDUCERS` lists every dev reducer
   name), and check that the production client bundle holds no DEV debug hooks
-  (`scripts/verify-build-hooks.mjs`). The committed client bindings are generated from a build
-  with no dev feature, and the `bindings-drift` eval fails if a dev reducer appears in them.
+  (`scripts/verify-build-hooks.mjs`). The committed client bindings are generated from the
+  default build, and the `bindings-drift` eval fails if a dev reducer appears in them.
 - **`dev_expire_tactical_window`** is callable only by the module owner (the `config` row's
   `owner_identity`, the check `sync_content` makes). It moves the named side's open turn window
   deadline to the call's time and arms one deadline fire there, through the dev-gated forwarder
@@ -489,16 +491,17 @@ call or by the tick.
   Active tactical battle, wild, PvP or Practice (a wild expiry is the AutoFlee a real deadline
   gives), and refuses a Deploying or Finished battle.
 - **`dev_place_in_load_zone`** exists only in the load-test build, which `just load-host`
-  publishes to a `monster-realm-load-zones*` database on a loopback host (a remote one only with
-  `MR_LOAD_ALLOW_REMOTE=1`). That build also appends game-core's 100 generated zones, 16×16
-  floor with ids 10000–10099 (`game-core/src/load_test_zones.rs`), to the zone, zone-map and
-  tactics-zone registries. Any caller may call the reducer, but only for itself: it moves the
-  caller's character to a load zone's spawn tile as the tick's warp arm moves a character. The
-  character arrives Idle, its queued moves are cleared and published with the seq kept, and the
-  zone's tick is armed. It refuses an id outside the band, a caller with no character or move
-  intent row, and a caller in an ongoing battle. The load driver (`mr_load_driver --zones`)
-  calls it once per bot after the join. The browser client is not supported in a load zone: its
-  wasm has no load-zone map, so it cannot predict there.
+  publishes to a `monster-realm-load-zones*` database on a loopback host (a remote one only
+  with `MR_LOAD_ALLOW_REMOTE=1`). That build also appends game-core's 100 generated zones,
+  16×16 floor with ids 10000–10099 (`game-core/src/load_test_zones.rs`), to the zone,
+  zone-map and tactics-zone registries. Any caller may call the reducer, but only for
+  itself: it moves the caller's character to a load zone's spawn tile as the tick's warp arm
+  moves a character. The character arrives Idle, its queued moves are cleared and published
+  with the seq kept, and the zone's tick is armed. It refuses an id outside the band, a
+  caller with no character or move intent row, and a caller in an ongoing battle. The load
+  driver (`mr_load_driver --zones`) calls it once per bot after the join, to spread its bots
+  over the zones. The browser client is not supported in a load zone: its wasm has no
+  load-zone map, so it cannot predict there.
 - **A new dev reducer** calls the deletion gate first; joins `FORBIDDEN_REDUCERS`; joins the
   census's `EXPECTED_GATED` (`privacy_enforcement_tests.rs`) and, when it adds a module,
   `EXPECTED_MODULES`, whose `mod` line carries no `cfg` because the census refuses every `cfg`
@@ -683,6 +686,9 @@ level are resolved before the executor debits the bait, the roll is game-core's
 with the pre-roll HP, and a success rebuilds the wild through `taming::insert_recruited`;
 `Item` entries stay refused (no game-core rule home yet). One anchor, one payout path: no
 client-callable 1v1 reducer exists, and no scheduled one.
+The module declares none of the 1v1 tables `battle_action`, `battle_wild` and
+`pvp_deadline_schedule`, the scheduled `pvp_deadline_reaper` or the `PvpAction` type, and tests
+over the generated module definition hold that none is declared.
 
 The `battle-schema-snapshot` and `spacetime-type-snapshot` evals record every table's
 columns and every nested `SpacetimeType` in `evals/baselines/`, so an unplanned
@@ -1188,14 +1194,13 @@ root, so opening one never closes a sibling.
   with the same identity starts a fresh account.
 - **Export.** `request_data_export` (`server-module/src/privacy.rs`) writes the caller's
   exportable tables as JSON chunks of `EXPORT_CHUNK_ROWS` (500) rows into the private
-  `export_bundle` table, read back through
-  `my_export_bundle`. It enforces a per-caller cooldown, a unique creation stamp per
-  bundle, and a global live-row cap (smaller for callers without an account, smaller
-  still without a wallet). A reaper deletes bundles older than 7 days within an hour
-  of their expiry; it is scheduled only while bundles exist, one one-shot at the oldest
-  expiry, and runs at most once an hour. The
-  client assembles the chunks (`ui/exportAssembly.ts`) and offers the file for
-  download from the privacy overlay, which opens from the account overlay (`C`).
+  `export_bundle` table, read back through `my_export_bundle`. It enforces a per-caller
+  cooldown, a unique creation stamp per bundle (a request under contention is refused), and
+  a global live-row cap (smaller for callers without an account, smaller still without a
+  wallet). A reaper deletes bundles older than 7 days within an hour of their expiry; it is
+  scheduled only while bundles exist, one one-shot at the oldest expiry, and runs at most
+  once an hour. The client assembles the chunks (`ui/exportAssembly.ts`) and offers the file
+  for download from the privacy overlay, which opens from the account overlay (`C`).
 - **The starter.** A first `join_game` grants the starter monster and the kit in
   `game-core/content/starter_kit.ron` (200 gold, 2 Lure Berries, 1 Antidote), which
   `validate_starter_kit` checks at publish. The grant is recorded by the flag
@@ -1208,45 +1213,49 @@ root, so opening one never closes a sibling.
   moves the dialogue row to the account and leaves the retired guest a tombstone row: its `sys:`
   flags, the starter flag and a copy of its done quests.
 - **Tags and lead level.** The private `player_handle` table (`owner_identity` primary key,
-  `discriminator: u32` `#[unique] #[auto_inc]`) is owned by `onboarding.rs` (`ensure_handle`,
-  `rekey_handle`, `erase_handle`, `has_handle`). `join_game` finds the caller's row or mints
-  one (insert 0, the column's sequence assigns the value), refuses the join with `handle
-  unavailable` when the datastore refuses the mint, and copies the value onto the public
-  `player.discriminator`. The claim moves the row (`rekey_all`), and a handle is game data
-  (`account_has_game_data`). The deletion cascade erases the handle and zeroes
-  `discriminator` and `lead_level` on the surviving `player` row; the export carries the
-  handle row. `player.lead_level` is the stored level of the owner's lead party monster:
-  `battle::refresh_lead_level` writes it only when the value differs, and the dual-write seam
-  (`monster_mgmt::update_monster_synced`) calls it when a write changes a monster's `level` or
-  `party_slot`; `join_game` and the session-trade transfer (`trading_session::apply_swap`) call
-  it themselves. On the client `StorePlayer` carries `discriminator` and `leadLevel` apart from
-  the raw `name`. `client/src/ui/playerTag.ts` is the one place a tag is formatted:
-  `formatTag(discriminator)` gives `#` and the number padded to at least four digits through
-  the catalog key `identity.tag` (no tag for 0), and `taggedName(players, identity)` joins the
-  name and the tag through `identity.taggedName` (`Drew #0042`). The Social screen's Players
-  row shows name, tag, lead level and Nearby, each its own element: the tag in
-  `--mr-text-muted`, which the accessibility suite checks in both themes, except on the cursor
-  row; the level through the battle HUD's `tactics.hud.level` copy, and none for 0. The
-  incoming trade and challenge request banner and the Trades-tab session row show the tagged
-  name; the tactical battle clock, the trade editor heading, the rename view and the Rankings
-  tab show the name alone. `playerName` (`client/src/ui/tradeSessionModel.ts`) shows `#` and
-  the first eight hex digits of the identity when the store holds no row for it or the row's
-  name is empty; that is not a tag (`validate_name` refuses an empty name at join and rename,
-  so only an identity the store does not hold reaches it).
-- **Ranked PvP** will require accounts on both sides once a real issuer is set
-  (`pvp.rs` `ranked_account_gate`). Until then the gate is inactive.
+  `discriminator: u32` `#[unique] #[auto_inc]`) is owned by `onboarding.rs`
+  (`ensure_handle`, `rekey_handle`, `erase_handle`, `has_handle`). `join_game` finds the
+  caller's row or mints one (insert 0, the column's sequence assigns the value), refuses the
+  join with `handle unavailable` when the datastore refuses the mint, and copies the value
+  onto the public `player.discriminator`. The claim moves the row (`rekey_all`), and a
+  handle is game data (`account_has_game_data`). The deletion cascade erases the handle and
+  zeroes `discriminator` and `lead_level` on the surviving `player` row; the export carries
+  the handle row. `player.lead_level` is the stored level of the owner's lead party monster:
+  `battle::refresh_lead_level` writes it only when the value differs, and the dual-write
+  seam (`monster_mgmt::update_monster_synced`) calls it when a write changes a monster's
+  `level` or `party_slot`; `join_game` and the session-trade transfer
+  (`trading_session::apply_swap`) call it themselves. On the client `StorePlayer` carries
+  `discriminator` and `leadLevel` apart from the raw `name`. `client/src/ui/playerTag.ts` is
+  the one place a tag is formatted: `formatTag(discriminator)` gives `#` and the number
+  padded to at least four digits through the catalog key `identity.tag` (no tag for 0), and
+  `taggedName(players, identity)` joins the name and the tag through `identity.taggedName`
+  (`Drew #0042`). The Social screen's Players row shows name, tag, lead level and Nearby,
+  each its own element: the tag in `--mr-text-muted`, which the accessibility suite checks
+  in both themes, except on the cursor row; the level through the battle HUD's
+  `tactics.hud.level` copy so it reads the same in both places, and none for 0. The incoming
+  trade and challenge request banner and the Trades-tab session row show the tagged name;
+  the tactical battle clock, the trade editor heading, the rename view and the Rankings tab
+  show the name alone. `playerName` (`client/src/ui/tradeSessionModel.ts`) shows `#` and the
+  first eight hex digits of the identity when the store holds no row for it or the row's
+  name is empty; that is not a tag (`validate_name` refuses an empty name at join and
+  rename, so only an identity the store does not hold reaches it, and that identity has no
+  tag to show).
+- **Ranked PvP** will require accounts on both sides once a real issuer is set (`pvp.rs`
+  `ranked_account_gate`). The gate reads `PRODUCTION_LOGIN_ISSUERS`, not the build's own
+  `ALLOWED_ISSUERS`; until a real issuer is set it is inactive.
 
 ## Observability
 
 - **Server.** The module emits JSON log lines. New code uses `observability::mr_log`;
-  refusals go through `guards::log_reject`. A 60 s `mr_heartbeat` logs the deployed
-  content version and writes nothing. It is the only thing scheduled in a world with
-  nobody connected and it stays on purpose: it is the operator's dead-man's switch for
-  the whole server (the `AlloyIngestStalled` alert reads ten minutes without module log
-  bytes as a stalled log pipeline, and an empty world logs nothing else). Zone ticks
-  and reapers are armed only while something needs them. The module never measures time itself or makes
-  outbound calls; the SpacetimeDB host exposes `/v1/metrics` and writes module logs
-  to files.
+  refusals go through `guards::log_reject`. A 60 s `mr_heartbeat` logs the deployed content
+  version and writes nothing. In a world with nobody connected it is the only schedule but
+  the hourly `host_account_check` tick, which runs only once the host has marked its own
+  account, and it stays on purpose: it is the operator's dead-man's switch for the whole
+  server (the `AlloyIngestStalled` alert reads ten minutes without module log bytes as a
+  stalled log pipeline, and an empty world logs nothing else). Zone ticks and reapers are
+  armed only while something needs them. The module never measures time itself and makes no
+  outbound call but the account checks'; the SpacetimeDB host exposes `/v1/metrics` and
+  writes module logs to files.
 - **Stack.** `ops/observability/` is a Docker Compose stack on the host network,
   bound to loopback: Prometheus scrapes the host and node_exporter; Grafana Alloy
   tails the module logs into Loki and receives browser OTLP through Caddy, forwarding
@@ -1278,13 +1287,14 @@ root, so opening one never closes a sibling.
 | Nightly | game-core mutation testing (zero missed), server mutation survivor cap, client coverage (report only), criterion perf budgets, republish-over-live-data smoke | `.github/workflows/nightly.yml` |
 
 The module-definition check (`findDefinitionViolations` in
-`scripts/verify-release-reducers.mjs`) reads what `extract-schema` prints and refuses an HTTP
-handler, an HTTP route, a row filter, a procedure not in `ALLOWED_PROCEDURES` (the four account
-checks in `account_checks.rs`), a schedule not in `ALLOWED_SCHEDULES`, at any submodule depth,
-and any section kind it does not know. `just module-definition` (in `just ci`) applies it to the
-default build and `just release-module` to each artefact it makes. The reducer census in
-`privacy_enforcement_tests.rs` refuses a `procedure` attribute outside `account_checks.rs`, and
-its `lpw34_7_unstable` module holds that the native test binary links with `unstable` on.
+`scripts/verify-release-reducers.mjs`) reads what `extract-schema` prints and refuses an
+HTTP handler, an HTTP route, a row filter, a procedure not in `ALLOWED_PROCEDURES` (the four
+account checks in `account_checks.rs`), a schedule not in `ALLOWED_SCHEDULES`, at any
+submodule depth, and any section kind it does not know. `just module-definition` (in `just
+ci`) applies it to the default build and `just release-module` to each artefact it makes.
+The reducer census in `privacy_enforcement_tests.rs` refuses a `procedure` attribute outside
+`account_checks.rs`, and that file's `lpw34_7_unstable` module holds that the native test
+binary links with `unstable` on.
 
 The native test host is `server-module/src/native_host_tests.rs`. A procedure runs through
 `Fixture::run_procedure`: the host's `procedure_*` functions put an aborted transaction's rows
