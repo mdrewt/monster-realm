@@ -1389,25 +1389,25 @@ The logger, the heartbeat and the stack's parts: `ARCHITECTURE.md` "Observabilit
 the D-pad, A, B, X, Y, LB, RB, Start and Select. Letter keys are optional accelerators that open a
 canonical menu path. Every screen is a frame on one pure context stack over a world or battle base:
 B pops one frame, and Start pops every frame to the base, or opens the main menu at a base. Every
-frame is a class-styled frame inside the game screen. Server-owned state (battles and
-dialogue) is reconciled into the stack on every batch, never pushed by a keypress, and the client
-never closes a server-owned frame itself: it sends the reducer. A trade or challenge request is a
-non-modal banner and world sheet, never a frame. Which overlay may open over another is one tier
-table. Menus are D-pad lists, grids and tabs whose active item is a key, never an index or a pointer
-cursor. The hint bar and Help are generated from the context table, the live bindings and the
-catalog. Bindings persist per browser, and the D-pad, A, B and Start always keep a key. Every
-waiting Controls cell has a way out on the pad: the button a Pad cell shows, else the live B, and
-the waiting line names it for a player on the pad. The session terminal is outside the router and
-the overlay registry, so on the pad the D-pad or the stick moves and A presses,
-while B and Start do nothing; a button held while the terminal opens, closes, arms or disarms its
-confirm step acts only once released and pressed again. Escape is routed ahead of every view, so no
-view can trap it (an Escape that ends an IME composition is the IME's); text-entry views shield their fields from the other keys' accelerators. Each view
-keeps its state in a pure model with a thin DOM view. Accessibility metadata for every overlay is
-one total record. A status condition is named by text, never by colour alone. All UI strings come
-from a total typed catalog (`en` and `fr`): a lookup throws on a missing key, and switching to an
-unregistered locale throws. One whole-tree scan holds that no non-test client file writes a raw
-string to a text sink; its sink floor only proves the scan still sees the tree, and each view's own
-runtime tests hold its behaviour.
+frame is a class-styled frame inside the game screen. Server-owned state (battles and dialogue) is
+reconciled into the stack on every batch, never pushed by a keypress, and the client never closes a
+server-owned frame itself: it sends the reducer. A trade or challenge request is a non-modal banner
+and world sheet, never a frame. Which overlay may open over another is one tier table. Menus are
+D-pad lists, grids and tabs whose active item is a key, never an index or a pointer cursor. The hint
+bar and Help are generated from the context table, the live bindings and the catalog. Bindings
+persist per browser, and the D-pad, A, B and Start always keep a key. Every waiting Controls cell
+has a way out on the pad: the button a Pad cell shows, else the live B, and the waiting line names
+it for a player on the pad. The session terminal is outside the router and the overlay registry, so
+on the pad the D-pad or the stick moves and A presses, while B and Start do nothing; a button held
+while the terminal opens, closes, arms or disarms its confirm step acts only once released and
+pressed again. Escape is routed ahead of every view, so no view can trap it (an Escape that ends an
+IME composition is the IME's); text-entry views shield their fields from the other keys'
+accelerators. Each view keeps its state in a pure model with a thin DOM view. Accessibility metadata
+for every overlay is one total record. A status condition is named by text, never by colour alone.
+All UI strings come from a total typed catalog (`en` and `fr`): a lookup throws on a missing key,
+and switching to an unregistered locale throws. One whole-tree scan holds that no non-test client
+file writes a raw string to a text sink; its sink floor only proves the scan still sees the tree,
+and each view's own runtime tests hold its behaviour.
 
 **Why.** A handheld-console grammar, where a few contextual buttons are primary and hotkeys are
 shortcuts, is the intended interface. One stack makes "back one level" and "exit everything"
@@ -1694,8 +1694,8 @@ The scale function, the root rule and the text-size factor: `ARCHITECTURE.md` "C
 kind to one of four channels. The **hint line** is a frame's feedback strip, or the world line when
 no frame hosts it. The **toast** is one timed region for outcomes. The **modal** is a confirm sheet
 for decisions. The **blocking text box** is the dialogue. The table is total over the kinds, so a
-kind with no channel fails typecheck. Senders go through one routing module and name a kind at
-the send site; a battle refusal paints the toast directly and is announced at once. A toast is announced
+kind with no channel fails typecheck. Senders go through one routing module and name a kind at the
+send site; a battle refusal paints the toast directly and is announced at once. A toast is announced
 once through the one live region and hides after a fixed time on the frame clock. A persistent hint
 follows the top frame. On the main menu's strip it outranks the menu's own line: an action-required
 hint comes first, then a persistent state, then a disabled reason, then a Y-description. Otherwise

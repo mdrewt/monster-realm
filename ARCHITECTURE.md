@@ -1192,13 +1192,13 @@ trap; the e2e suites find the battle by `[data-testid="battle-title"]` and the s
 **Feedback channels.** `ui/feedbackPolicy.ts` assigns each `MessageKind` its channel, in a table
 that `satisfies Record<MessageKind, PolicyRow>`. The world line is `#status`; the toast is one
 `.mr-toast` region (`ui/toast.ts`), announced once through `#a11y-live` (the notice pump) and hidden
-after `TOAST_MS` of the frame clock. `sendGuarded` names a kind per send site
-(`SEND_REJECT_KIND`); `main.ts`'s care, shop and rename outcomes name a kind. The menu strip's hint
-order is the wireframes' WF1-A9. The policy test pins the list of action-required toast kinds, and
-each of them names an on-screen state that also carries it. The strip has zero layout height: its height and negative bottom
-margin cancel, it sits in a 2rem bottom reserve on `.mr-frame` and `.mr-shell`, and it is sticky
-with `bottom: -2rem`, because Chromium measures sticky offsets inside the scroller's padding. Only
-the main menu's strip shows a persistent hint; on any other frame it is on `#status`.
+after `TOAST_MS` of the frame clock. `sendGuarded` names a kind per send site (`SEND_REJECT_KIND`);
+`main.ts`'s care, shop and rename outcomes name a kind. The menu strip's hint order is the
+wireframes' WF1-A9. The policy test pins the list of action-required toast kinds, and each of them
+names an on-screen state that also carries it. The strip has zero layout height: its height and
+negative bottom margin cancel, it sits in a 2rem bottom reserve on `.mr-frame` and `.mr-shell`, and
+it is sticky with `bottom: -2rem`, because Chromium measures sticky offsets inside the scroller's
+padding. Only the main menu's strip shows a persistent hint; on any other frame it is on `#status`.
 
 **Menu tokens.** The `--mr-*` tokens live in `client/src/styles.css`, with the frame, chip and
 banner border widths as `--mr-border-width` and `--mr-border-thin` and every color's
