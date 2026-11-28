@@ -2650,17 +2650,17 @@ counts for it, so delisting refuses at the next check; and an identity with no s
 holds an admission row. An attestation binding is not read. The list is read at every check and
 nothing is stored from it. Admission rows are written only by the owner's rule change: to each
 identity the call names, and, when the rule changes to one that is not `Open`, to each live identity
-other than the owner that the rule in force before the call admitted (one that rule refused gets
-none unless the call names it). One is deleted with its identity's `world_account` row by the
-player's own unbind and the owner's drop, by the deletion cascade and a guest claim (for the retired
-guest), and by a character move, for a source the rule was not admitting. The list is the owner's to
-edit, at most 256 handles, and is made from the players already let in: a change to `Allowlist` adds
-the handle of every `world_account` row whose identity the rule in force admitted, the owner's own
-handle stays listed while the rule is `Allowlist`, a write that would take the list past its bound
-is refused, and an account's deletion takes off the handle of the deleted identity's `world_account`
-row. The module declares no HTTP handler, no HTTP route and no row filter. The module's half is
-built; the gate's half (the door endpoint and its password check, closing a removed identity's
-sockets) is designed, not built.
+other than the owner that the rule in force before the call admitted (a live identity that rule
+refused gets none unless the call names it). One is deleted with its identity's `world_account` row
+by the player's own unbind and the owner's drop, by the deletion cascade and a guest claim (for the
+retired guest), and by a character move, for a source the rule was not admitting. The list is the
+owner's to edit, at most 256 handles, and is made from the players already let in: a change to
+`Allowlist` adds the handle of every `world_account` row whose identity the rule in force admitted,
+the owner's own handle stays listed while the rule is `Allowlist`, a write that would take the list
+past its bound is refused, and an account's deletion takes off the handle of the deleted identity's
+`world_account` row. The module declares no HTTP handler, no HTTP route and no row filter. The
+module's half is built; the gate's half (the door endpoint and its password check, closing a removed
+identity's sockets) is designed, not built.
 
 **Why.** Measured at SpacetimeDB 2.11.0 (the WebSocket, `call`, `sql` and the MCP tools) and again
 at 2.16.1 (the WebSocket, `call`, `sql` and the MCP `sql` tool): every route that reads a row or
