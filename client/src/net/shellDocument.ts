@@ -1,6 +1,7 @@
 // net/shellDocument.ts — the shell document: what the page's host tells the client about the
-// server it should join. The host assigns it to a page global from a classic script that runs
-// before the client module; `net/connectionConfig.ts` validates what is read here.
+// server it should join, and whether that host is the desktop shell. The host assigns it to a
+// page global from a classic script that runs before the client module;
+// `net/connectionConfig.ts` validates what is read here.
 //
 // PURE and free of `import.meta`: `vite.config.ts` imports it to write the script it serves.
 
@@ -16,7 +17,15 @@ export const TARGET_KINDS = ['official', 'test', 'local', 'private'] as const;
 export type TargetKind = (typeof TARGET_KINDS)[number];
 
 export interface ShellDocument {
-  readonly connection: { readonly uri: string; readonly db: string; readonly kind?: TargetKind };
+  readonly connection: {
+    readonly uri: string;
+    readonly db: string;
+    readonly kind?: TargetKind;
+    /** The fingerprint of the world's certificate key, as the invite prints it. */
+    readonly fingerprint?: string;
+  };
+  /** `'desktop'`: the page runs in the desktop shell. Absent: a browser. */
+  readonly host?: 'desktop';
 }
 
 /**

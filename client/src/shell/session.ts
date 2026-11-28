@@ -5,12 +5,14 @@
 // mounts the connection it opens (`adoptConnection`), reports the connection's lifecycle
 // (`adoptIdentity`, `markReady`, `noteHydrated`, `clearHydration`, `armEmitReseed`), resets the
 // latches with the prediction state (`resetEmitLatches`) and registers the two latch steps
-// (`stepBattleEmit`, `stepRankedEmit`) as batch listeners. Module scope constructs the store and
-// the ready promise: it registers no listener, writes nothing to the document and resolves no
+// (`stepBattleEmit`, `stepRankedEmit`) as batch listeners, and shows what `buildWorldGateView`
+// projects while a world has not accepted the player's account. Module scope constructs the store
+// and the ready promise: it registers no listener, writes nothing to the document and resolves no
 // catalog string.
 
 import type { connect } from '../net/connection';
 import { AuthoritativeStore } from '../net/store';
+import type { WorldGateState } from '../net/worldTicket';
 import {
   armReseed,
   BATTLE_EMIT_INITIAL,
@@ -20,8 +22,9 @@ import {
   resetBattleEmit,
 } from '../ui/battleEmitModel';
 import type { OutcomeLine } from '../ui/boxView';
+import type { SignInGateView } from '../ui/claimModel';
 import type { SinkKind } from '../ui/feedbackPolicy';
-import { tf } from '../ui/i18n/resolver';
+import { t, tf } from '../ui/i18n/resolver';
 import { reduceErrorMessage } from '../ui/statusModel';
 import { STEP_MS } from './config';
 import { eventRing, reportError } from './feedback';
@@ -201,4 +204,97 @@ export function stepRankedEmit(): void {
   } catch (err) {
     console.error('[obs] ranked', err);
   }
+}
+
+// --- the world's account gate ---------------------------------------------------------------
+// A single-player world or a friends server checks a player's account itself
+// (net/worldTicket.ts). Until it has accepted the account the menu frame shows this gate, in the
+// gate mode it shows a server's sign-in gate in (ui/claimModel.ts): one row runs the check again,
+// and the Store row is added once the world has said the account does not own the game.
+
+type WorldGateRow = SignInGateView['rows'][number];
+
+const worldGateAction = (label: string, description: string): WorldGateRow => ({
+  key: 'signIn',
+  label,
+  description,
+});
+
+const worldMovedBody = (movedAtMs: number, formatTime: (ms: number) => string): string =>
+  tf('world.gate.moved.body', { time: formatTime(movedAtMs) });
+
+/** Pure projection of the world's gate, every string resolved here; `undefined` while it is
+ *  down. `formatTime` writes the time a character moved away for the player's locale. */
+export function buildWorldGateView(
+  state: WorldGateState,
+  formatTime: (ms: number) => string,
+): SignInGateView | undefined {
+  if (state.phase === 'hidden') return undefined;
+  const stays = t('claim.gate.stays');
+  const retry = (): WorldGateRow =>
+    worldGateAction(t('world.gate.retry.row'), t('world.gate.retry.desc'));
+  const again = (): WorldGateRow =>
+    worldGateAction(t('world.gate.again.row'), t('world.gate.again.desc'));
+  switch (state.phase) {
+    case 'sign-in':
+      return {
+        title: t('claim.gate.signIn.title'),
+        line: { kind: 'info', text: t('world.gate.signIn.body') },
+        rows: [worldGateAction(t('world.gate.signIn.row'), t('claim.gate.signIn.desc'))],
+        stays,
+      };
+    case 'unreachable':
+      return {
+        title: t('world.gate.check.title'),
+        line: { kind: 'error', text: t('world.gate.unreachable.body') },
+        rows: [retry()],
+        stays,
+      };
+    case 'refused':
+      return {
+        title: t('world.gate.check.title'),
+        line: {
+          kind: 'error',
+          text:
+            state.reason === ''
+              ? t('world.gate.failed.body')
+              : tf('world.gate.refused.body', { reason: state.reason }),
+        },
+        rows: [retry()],
+        stays,
+      };
+    case 'not-owned':
+      return {
+        title: t('claim.gate.notOwned.title'),
+        line: { kind: 'error', text: t('claim.gate.notOwned.body') },
+        rows: [
+          again(),
+          {
+            key: 'store',
+            label: t('claim.gate.store.title'),
+            description: t('claim.gate.store.desc'),
+          },
+        ],
+        stays,
+      };
+    case 'moved':
+      return {
+        title: t('world.gate.moved.title'),
+        line: { kind: 'info', text: worldMovedBody(state.movedAtMs, formatTime) },
+        rows: [again()],
+        stays,
+      };
+  }
+}
+
+/** The gate as one status line, for a client that has no ticket source and so nothing to offer:
+ *  where the character plays, or that a first visit needs the account service. `undefined` in
+ *  every other phase. */
+export function worldStatusLine(
+  state: WorldGateState,
+  formatTime: (ms: number) => string,
+): string | undefined {
+  if (state.phase === 'moved') return worldMovedBody(state.movedAtMs, formatTime);
+  if (state.phase === 'unreachable') return t('world.gate.unreachable.body');
+  return undefined;
 }

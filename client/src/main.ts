@@ -55,6 +55,7 @@ import { claimCode } from './net/claimCode';
 import { connect } from './net/connection';
 import type { SignInMode } from './net/credentialDecision';
 import { RATE_LIMIT_INITIAL, rateLimitTick } from './net/devLog';
+import { createOidcClient } from './net/oidc';
 import type { ProtocolMismatch } from './net/protocolCheck';
 import { ServerClock } from './net/serverClock';
 import {
@@ -64,6 +65,14 @@ import {
   type StoreTradeSessionOffer,
 } from './net/store';
 import { describeScope, INITIAL_SCOPE, revealAfterScopeEdge } from './net/worldScope';
+import {
+  createIdTokenTicketSource,
+  WORLD_GATE_INITIAL,
+  type WorldGateEvent,
+  type WorldGateState,
+  worldGateStep,
+  worldNameFor,
+} from './net/worldTicket';
 import { shouldReportZoneSyncFailure } from './net/zoneSyncGuard';
 import { resolveTelemetryConfig } from './observability/config';
 import { createFrameWindow, frameTick } from './observability/frameWindow';
@@ -85,6 +94,7 @@ import { type RenderEntity, WorldRenderer } from './render/world';
 import {
   DB,
   DELETION_GRACE_MS_DEFAULT,
+  DESKTOP_SHELL,
   fateLogger,
   PARTY_SIZE,
   PARTY_SLOT_NONE,
@@ -95,6 +105,7 @@ import {
   TARGET_KIND,
   URI,
   WASM_READY_MS,
+  WORLD_FINGERPRINT,
   ZONE_ID,
 } from './shell/config';
 import {
@@ -157,6 +168,7 @@ import {
   adoptConnection,
   adoptIdentity,
   armEmitReseed,
+  buildWorldGateView,
   clearHydration,
   conn,
   hydratedSinceReconnect,
@@ -172,6 +184,7 @@ import {
   stepBattleEmit,
   stepRankedEmit,
   store,
+  worldStatusLine,
 } from './shell/session';
 import {
   boxView,
@@ -457,8 +470,8 @@ const OIDC_ISSUER = OPERATED_BY_US
   ? ((import.meta.env.VITE_MR_OIDC_ISSUER as string | undefined) ?? '')
   : '';
 // Sign-in is on only where OIDC_ISSUER holds an issuer: a server we operate whose build names one.
-// Off, `connect` builds no OIDC client, so no OIDC request leaves the page whatever the URL or
-// storage holds.
+// Off, `connect` builds no OIDC client and sends no account token: the one sign-in a page can
+// still make is for a world's ticket (WORLD_ACCESS below), and its token never reaches `connect`.
 const SIGN_IN_MODE: SignInMode = OIDC_ISSUER === '' ? 'off' : 'oidc';
 const SIGN_IN_OFFER = signInOffer(
   OIDC_ISSUER,
@@ -468,6 +481,40 @@ const SIGN_IN_OFFER = signInOffer(
 // join before one connects. A `test` server may be open: there the connection learns the same
 // from the first join the server refuses (net/connection.ts `accountRequired`).
 const ACCOUNT_REQUIRED = TARGET_KIND === 'official' && SIGN_IN_MODE === 'oidc';
+// A single-player world or a friends server checks the player's account itself, from a one-use
+// ticket this client gets for it (net/worldTicket.ts). A page in a browser gets that ticket by
+// signing in to the account service, and only where the build names the service for worlds:
+// WORLD_TICKET_ISSUER is the one read of that value, and the sign-in and the ticket route both
+// use it. The desktop shell's page holds no login token, so it builds no source. With no source,
+// or no name this page authenticated the server by (`worldNameFor` names only a `local` or
+// `private` target), `connect` gets no `world`: it joins as it would a server that checks
+// nothing, and the module's answer is shown.
+const WORLD_TICKET_ISSUER = DESKTOP_SHELL
+  ? ''
+  : ((import.meta.env.VITE_MR_WORLD_TICKET_ISSUER as string | undefined) ?? '');
+const WORLD_NAME = worldNameFor({
+  kind: TARGET_KIND,
+  uri: URI,
+  db: DB,
+  fingerprint: WORLD_FINGERPRINT,
+});
+const WORLD_ACCESS = (() => {
+  if (WORLD_TICKET_ISSUER === '' || WORLD_NAME === undefined) return undefined;
+  const oidc = createOidcClient(globalThis, {
+    issuer: WORLD_TICKET_ISSUER,
+    clientId: (import.meta.env.VITE_MR_OIDC_CLIENT_ID as string | undefined) ?? '',
+    redirectUri: (import.meta.env.VITE_MR_OIDC_REDIRECT_URI as string | undefined) ?? '',
+    uri: URI,
+    db: DB,
+  });
+  // The return leg of a sign-in this page started is recorded for the next ticket. It sends
+  // nothing: the exchange runs only when the connection asks the source.
+  oidc.consumeReturnLeg();
+  return {
+    name: WORLD_NAME,
+    tickets: createIdTokenTicketSource(globalThis, { issuer: WORLD_TICKET_ISSUER, oidc }),
+  };
+})();
 // Seeded with the shared no-op; re-assigned once by the init hunk iff the bootstrap resolves.
 let telemetry: ClientTelemetry = NOOP_TELEMETRY;
 // Frame accumulator — created ONCE, carried across rAF frames by the frame hunk.
@@ -1737,7 +1784,9 @@ function applyMenuStep(step: MainMenuStep, tab?: AccelPath['tab']): void {
       menuView?.hide();
       break;
     case 'signIn':
-      void dispatch({ kind: 'claimSignIn' });
+      // A world's gate has one action whatever its row says: the connection's account check.
+      if (worldGate.phase !== 'hidden' && WORLD_ACCESS !== undefined) conn?.checkIn();
+      else void dispatch({ kind: 'claimSignIn' });
       break;
     case 'store':
       window.open(OWNERSHIP_STORE_URL, '_blank', 'noopener');
@@ -1754,21 +1803,38 @@ function applyMenuStep(step: MainMenuStep, tab?: AccelPath['tab']): void {
 // single-player world, a friends server, a build with no issuer) has no view: there the gate is
 // one status line saying why the player is not in the world.
 let signInGate: SignInGateState = SIGN_IN_GATE_INITIAL;
+// A single-player world's or a friends server's own gate (net/worldTicket.ts `worldGateStep`,
+// shell/session.ts `buildWorldGateView`): up until that world has accepted the player's account.
+// It shows in the same frame, and its one action is the connection's account check.
+let worldGate: WorldGateState = WORLD_GATE_INITIAL;
 /** The standing line last announced, so a repaint that changes nothing says nothing. */
 let saidGateLine: string | null = null;
 
-/** The gate's view: undefined while it is down, and always for a build that offers no sign-in. */
-const signInGateView = () => buildSignInGateView(signInGate, SIGN_IN_OFFER);
+/** When a character moved to another client, written for the page's locale. */
+const formatGateTime = (ms: number): string =>
+  new Intl.DateTimeFormat(LOCALE, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(ms));
+
+/** Whether neither gate is up. */
+const gatesDown = (): boolean => signInGate.phase === 'hidden' && worldGate.phase === 'hidden';
+
+/** The gate's view: a world's gate when this client can ask for its account check, else the
+ *  sign-in gate's. Undefined while both are down, and for a build that has nothing to offer. */
+const signInGateView = () =>
+  (WORLD_ACCESS === undefined ? undefined : buildWorldGateView(worldGate, formatGateTime)) ??
+  buildSignInGateView(signInGate, SIGN_IN_OFFER);
 
 /** Show the gate, or repaint it with its current view. It is the only screen a player the server
  *  has not admitted has, so every other player frame closes first. Nothing shows before the first
  *  applied snapshot: `onReady` shows a gate raised ahead of it. `onReconnect` shows it again at
  *  its tail, after the sweep closed the frame and the feedback reset cleared the status line. */
 function showSignInGate(): void {
-  if (signInGate.phase === 'hidden' || identity === '') return;
+  if (gatesDown() || identity === '') return;
   const view = signInGateView();
   if (view === undefined) {
-    reportError('connect-failure', notOwnedLine());
+    const line =
+      worldStatusLine(worldGate, formatGateTime) ??
+      (signInGate.phase === 'hidden' ? undefined : notOwnedLine());
+    if (line !== undefined) reportError('connect-failure', line);
     return;
   }
   if (menuPlace() !== 'top') applyStack(contextStack, popToBase(contextStack));
@@ -1788,11 +1854,25 @@ function lowerSignInGate(): void {
   syncStack();
 }
 
+/** Show what the two gates say after a step: the frame comes down once neither is up. */
+function syncGateFrame(): void {
+  if (gatesDown()) lowerSignInGate();
+  else showSignInGate();
+}
+
 /** One gate event: step the model, then show what it says. */
 function applySignInGate(event: SignInGateEvent): void {
   signInGate = signInGateStep(signInGate, event);
-  if (signInGate.phase === 'hidden') lowerSignInGate();
-  else showSignInGate();
+  syncGateFrame();
+}
+
+/** One event of a world's gate. A step that changes nothing (the own player row while the
+ *  character plays elsewhere) repaints nothing. */
+function applyWorldGate(event: WorldGateEvent): void {
+  const next = worldGateStep(worldGate, event);
+  if (next === worldGate) return;
+  worldGate = next;
+  syncGateFrame();
 }
 
 /** Start's "close every frame" while the gate is up. On the gate it is B: the gate's stays line,
@@ -1804,8 +1884,9 @@ function holdSignInGate(): void {
 
 // The gate goes down once the player has joined: the own player row is in the store.
 store.onBatchApplied(() => {
-  if (signInGate.phase === 'hidden' || identity === '') return;
-  if (store.player(identity) !== undefined) applySignInGate({ kind: 'joined' });
+  if (identity === '' || store.player(identity) === undefined) return;
+  if (signInGate.phase !== 'hidden') applySignInGate({ kind: 'joined' });
+  if (worldGate.phase !== 'hidden') applyWorldGate({ kind: 'joined' });
 });
 
 /** A click on an entry; ignored while a child covers the menu. */
@@ -5003,6 +5084,9 @@ async function main(): Promise<void> {
     store,
     signIn: SIGN_IN_MODE,
     targetKind: TARGET_KIND,
+    desktop: DESKTOP_SHELL,
+    world: WORLD_ACCESS,
+    onWorldGate: applyWorldGate,
     clientProtocol: PROTOCOL_VERSION,
     authIssuer: OIDC_ISSUER,
     authClientId: OPERATED_BY_US ? (import.meta.env.VITE_MR_OIDC_CLIENT_ID ?? '') : '',

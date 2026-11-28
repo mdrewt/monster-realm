@@ -66,6 +66,32 @@ describe('shell config constants', () => {
     expect(c.TARGET_KIND).toBe('local');
   });
 
+  it('takes WORLD_FINGERPRINT and DESKTOP_SHELL from the same shell document as URI, DB and TARGET_KIND [lpw-24.7]', async () => {
+    setShellDocument({
+      connection: {
+        uri: 'wss://doc-host.example/',
+        db: 'doc-realm',
+        kind: 'local',
+        fingerprint: 'Fp_9-xyz',
+      },
+      host: 'desktop',
+    });
+    const c = await loadConfig();
+    expect([c.URI, c.DB, c.TARGET_KIND, c.WORLD_FINGERPRINT, c.DESKTOP_SHELL]).toEqual([
+      'wss://doc-host.example/',
+      'doc-realm',
+      'local',
+      'Fp_9-xyz',
+      true,
+    ]);
+
+    // With no document: the development target, no fingerprint, not the desktop shell.
+    delete (globalThis as Record<string, unknown>)[SHELL_CONFIG_GLOBAL];
+    const bare = await loadConfig();
+    expect(bare.WORLD_FINGERPRINT).toBeUndefined();
+    expect(bare.DESKTOP_SHELL).toBe(false);
+  });
+
   it('resolves the development target when the page has no shell document, whatever the build env holds', async () => {
     stubBuildEnv();
     const c = await loadConfig();

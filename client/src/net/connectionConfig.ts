@@ -20,6 +20,10 @@ export interface ResolvedConnection {
   readonly uri: string;
   readonly db: string;
   readonly kind: TargetKind;
+  /** The fingerprint of the world's certificate key, when the document carries one. */
+  readonly fingerprint: string | undefined;
+  /** Whether the document says the page runs in the desktop shell. */
+  readonly desktop: boolean;
 }
 
 type Fields = Record<PropertyKey, unknown>;
@@ -131,17 +135,44 @@ function kindOf(connection: Fields, isDev: boolean): TargetKind {
   return kind;
 }
 
+// What the invite prints for the world's certificate key: one unbroken run a name can carry.
+const FINGERPRINT = /^[A-Za-z0-9_-]{1,128}$/;
+
+/** The own `connection.fingerprint`, read once and not trimmed; `undefined` when absent. */
+function fingerprintOf(connection: Fields): string | undefined {
+  if (!Object.hasOwn(connection, 'fingerprint')) return undefined;
+  const raw = connection.fingerprint;
+  if (typeof raw !== 'string') throw refusal('connection.fingerprint', 'must be a string');
+  if (!FINGERPRINT.test(raw)) {
+    throw refusal(
+      'connection.fingerprint',
+      'must be 1 to 128 characters of A-Z, a-z, 0-9, "-" or "_"',
+    );
+  }
+  return raw;
+}
+
+/** Whether the document's own `host`, read once, says the page runs in the desktop shell. */
+function desktopOf(doc: Fields): boolean {
+  if (!Object.hasOwn(doc, 'host')) return false;
+  if (doc.host !== 'desktop') throw refusal('host', 'must be "desktop"');
+  return true;
+}
+
 /**
  * Resolve the connection target from the shell document `doc` (`readShellDocument`'s result).
  *
  * Absent (`undefined`): a development build joins the local dev target as kind `test`; a
  * production build throws, because it has no server of its own to assume.
  *
- * Present: `doc` must be an object holding only `connection`, itself an object holding `uri`,
- * `db` and optionally `kind` and nothing else, each an own property read once. `uri` must pass
- * `isWsUrl`; `db` must match `[A-Za-z0-9_-]+`; `kind` must be one of `TARGET_KINDS`. A production
- * build also refuses the development database in any letter case: a misconfiguration guard by
- * name, so a released client never writes into the dev loop's data.
+ * Present: `doc` must be an object holding `connection` and optionally `host` and nothing else;
+ * `connection` an object holding `uri`, `db` and optionally `kind` and `fingerprint` and nothing
+ * else, each an own property read once. `uri` must pass `isWsUrl`; `db` must match
+ * `[A-Za-z0-9_-]+`; `kind` must be one of `TARGET_KINDS`; `fingerprint` must be 1 to 128
+ * characters of `[A-Za-z0-9_-]`; `host` must be `'desktop'`, which the desktop shell writes and a
+ * browser page's document leaves out. Both are accepted with every kind. A production build also
+ * refuses the development database in any letter case: a misconfiguration guard by name, so a
+ * released client never writes into the dev loop's data.
  *
  * The returned `uri` and `db` are the document's strings trimmed and otherwise unchanged (no
  * case folding, no slash or port normalization): the reconnect token and the claim code are
@@ -149,7 +180,9 @@ function kindOf(connection: Fields, isDev: boolean): TargetKind {
  */
 export function resolveConnectionConfig(doc: unknown, isDev: boolean): ResolvedConnection {
   if (doc === undefined) {
-    if (isDev) return { uri: DEV_URI, db: DEV_DB, kind: 'test' };
+    if (isDev) {
+      return { uri: DEV_URI, db: DEV_DB, kind: 'test', fingerprint: undefined, desktop: false };
+    }
     throw refusal(
       SHELL_CONFIG_GLOBAL,
       `is not set: the page must load /${SHELL_CONFIG_SCRIPT}, or its host must set the ` +
@@ -157,14 +190,16 @@ export function resolveConnectionConfig(doc: unknown, isDev: boolean): ResolvedC
     );
   }
   if (!isObject(doc)) throw refusal(SHELL_CONFIG_GLOBAL, 'must be an object');
-  refuseUnknownKeys(doc, ['connection'], SHELL_CONFIG_GLOBAL);
+  refuseUnknownKeys(doc, ['connection', 'host'], SHELL_CONFIG_GLOBAL);
   if (!Object.hasOwn(doc, 'connection')) throw refusal('connection', 'is missing');
   const connection = doc.connection;
   if (!isObject(connection)) throw refusal('connection', 'must be an object');
-  refuseUnknownKeys(connection, ['uri', 'db', 'kind'], 'connection');
+  refuseUnknownKeys(connection, ['uri', 'db', 'kind', 'fingerprint'], 'connection');
   return {
     uri: uriOf(connection),
     db: dbOf(connection, isDev),
     kind: kindOf(connection, isDev),
+    fingerprint: fingerprintOf(connection),
+    desktop: desktopOf(doc),
   };
 }

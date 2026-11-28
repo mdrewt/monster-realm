@@ -700,14 +700,18 @@ and hands the tactical shell a getter of it.
 `net/connection.ts` builds the SpacetimeDB connection from the target in `shell/config.ts`
 (`URI`, `DB`). The host sets that target in a page global: `index.html` loads a classic script,
 `/shell-config.js`, as a `<body>` child before the module script, and it assigns
-`globalThis.__MR_SHELL_CONFIG__` to the shell document `{ connection: { uri, db, kind } }`.
+`globalThis.__MR_SHELL_CONFIG__` to the shell document `{ connection: { uri, db, kind, fingerprint }, host }`.
 `net/shellDocument.ts` owns the global's and the script's names, the four kinds (`official`,
 `test`, `local`, `private`), `readShellDocument` (the global's own value only) and
 `renderShellConfigScript`. `net/connectionConfig.ts` holds the one resolver, which rejects and
 never clamps. With no document a development build joins `ws://127.0.0.1:3000`, database
 `monster-realm`, kind `test`, and a production build throws. A present document must hold only
-`connection`, which holds `uri`, `db` and optionally `kind`; anything else throws in every
-build. `uri` is an absolute `ws:`/`wss:` URL with no userinfo, query, fragment or
+`connection` and optionally `host`; `connection` holds `uri`, `db` and optionally `kind` and
+`fingerprint`; anything else throws in every build. `fingerprint` (the world's certificate
+key's fingerprint, 1 to 128 characters of `A-Z a-z 0-9 - _`) and a top-level `host`, whose
+only value is `'desktop'`, are accepted with every kind and exported by `shell/config.ts` as
+`WORLD_FINGERPRINT` and `DESKTOP_SHELL`. `uri` is an absolute `ws:`/`wss:` URL with no
+userinfo, query, fragment or
 whitespace, and a path ends in `/` and holds no `.` or `..` segment (the SDK resolves its
 endpoints relative to it, so any other path would dial a prefix the string does not name). `db`
 matches `[A-Za-z0-9_-]+`, and a production build also refuses `monster-realm` in any letter
@@ -776,12 +780,14 @@ build path starts an attempt there: the reconnect timer, the first boot, `reconn
 `continueAnonymously`. The shared drop path (`handleDrop`) counts the drop of an attempt that never
 applied as that attempt's failure, and shows "connection lost" only on the connected-to-disconnected
 edge and never on a page the protocol check refused.
-The SpacetimeDB token for an anonymous identity is kept where the target's kind says
-(`tokenPersistenceFor` in `net/authToken.ts`). Toward an `official` or `test` server it is
-in per-tab `sessionStorage`, so an identity survives a reload but not closing the tab, and
-a second tab is a separate identity. Toward a `local` or `private` one it is in the
-origin's `localStorage`, so a page closed and opened again in the same browser profile
-resumes the same player, and a second page joins as the same identity. After two token
+The SpacetimeDB token for an anonymous identity is kept where the host and the target's kind
+say (`tokenPersistenceFor(kind, desktop)` in `net/authToken.ts`). The origin's `localStorage`
+holds it only when the shell document carries `host: 'desktop'` and the kind is `local` or
+`private`, so a relaunch of the desktop shell resumes the same player. Every other case, a
+page in a browser for every kind included, keeps it in per-tab `sessionStorage`, so an
+identity survives a reload but not closing the tab, and a second tab is a separate
+identity; for a `local` or `private` target kept per tab, `connect()` first removes that
+one target's token key from `localStorage` (`forgetDeviceToken`). After two token
 rejections since the last
 successful connect, the client stops sending the stored token (it never deletes it) and
 connects anonymously. If that connect succeeds, `onConnected` stores the new token over
@@ -806,7 +812,20 @@ which the main menu frame shows in place of its entries (`openSignInGate`,
 `ui/screens/mainMenuScreen.ts`): a sign-in row, and after a refusal the not-owned title
 with a row that opens the store. Nothing closes it, Escape included; it goes down when
 the own `player` row arrives. A target with no sign-in to offer (`local`, `private`, a
-build with no issuer) gets one status line instead of the screen.
+build with no issuer) gets one status line instead of the screen, unless it is a `local` or
+`private` world's account check.
+
+`net/worldTicket.ts` owns that check's client half: `worldNameFor` (the world's name as a
+browser page authenticated it, or none, and then no ticket is asked for), the `TicketSource`
+interface (`ticket(world)`, `signIn()`) with `createIdTokenTicketSource` (a page that signs in
+to the account service itself and sends its in-memory ID token only to `<issuer>/ticket`;
+`main.ts` builds it for a `local` or `private` target outside the desktop shell when
+`VITE_MR_WORLD_TICKET_ISSUER` is set), and `worldGateStep`, the pure gate reducer. A connection
+to such a target subscribes `my_world_account` and `my_world_move`, reads its own rows at each
+applied snapshot and, with neither row and a ticket source, runs first contact (a ticket, then
+`check_account(ticket)`) before `join_game`; only the page's first snapshot does so by itself, a
+later one waits for `Connection.checkIn()`. `buildWorldGateView` (`shell/session.ts`) drives the
+same menu frame's gate mode; with no ticket source the facts are one status line.
 
 ### Prediction and reconciliation
 

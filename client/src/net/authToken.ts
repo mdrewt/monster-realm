@@ -117,7 +117,7 @@ function storageKey(uri: string, db: string): string {
 function storageMethod(
   host: TokenStorageHost | undefined,
   area: keyof TokenStorageHost,
-  name: 'getItem' | 'setItem',
+  name: 'getItem' | 'setItem' | 'removeItem',
 ) {
   try {
     // The PROPERTY ACCESS itself can throw SecurityError when cookies/site data are
@@ -135,15 +135,18 @@ function storageMethod(
 }
 
 /**
- * Where a target of `kind` keeps its reconnect token. A single-player world (`local`) and a
- * friends server (`private`) keep it on the device, so a page closed and opened again resumes
- * the same player; a server we operate (`official`, `test`) keeps it per tab.
+ * Where a target of `kind` keeps its reconnect token. In the desktop shell (`desktop`), a
+ * single-player world (`local`) and a friends server (`private`) keep it on the device, so a
+ * relaunch resumes the same player. A page in a browser keeps it per tab for every kind: a
+ * browser may be anyone's, and the world finds the player's character again by their account. A
+ * server we operate (`official`, `test`) keeps it per tab in the shell too.
  */
-export function tokenPersistenceFor(kind: TargetKind): TokenPersistence {
+export function tokenPersistenceFor(kind: TargetKind, desktop: boolean): TokenPersistence {
   switch (kind) {
     case 'local':
     case 'private':
-      return 'device';
+      // `=== true` is the fail-closed side: any other run-time value keeps the token per tab.
+      return desktop === true ? 'device' : 'tab';
     case 'official':
     case 'test':
       return 'tab';
@@ -156,6 +159,25 @@ export function tokenPersistenceFor(kind: TargetKind): TokenPersistence {
 }
 
 /**
+ * Remove this target's reconnect token from the origin's `localStorage`, where a page that kept
+ * it on the device left it. It removes that one key and nothing else, never reads the token, and
+ * returns quietly when the area is blocked or missing.
+ */
+export function forgetDeviceToken(
+  host: TokenStorageHost | undefined,
+  uri: string,
+  db: string,
+): void {
+  const removeItem = storageMethod(host, 'localStorage', 'removeItem');
+  if (removeItem === undefined) return;
+  try {
+    removeItem(storageKey(uri, db));
+  } catch {
+    // A blocked area holds nothing this page could have read either.
+  }
+}
+
+/**
  * Build the per-connection-target credential gate.
  *
  * `host` is the object that may expose the two storage areas, and `persistence` picks the one
@@ -164,7 +186,7 @@ export function tokenPersistenceFor(kind: TargetKind): TokenPersistence {
  *
  * `'tab'` is `sessionStorage`: the token survives a reload, and a second tab is an independent
  * identity (identity hygiene, and one token per tab bounds the open token-wedge residual).
- * `'device'` is `localStorage`: every page of the browser profile shares the token, and a later
+ * `'device'` is `localStorage`: every page of the shell's profile shares the token, and a later
  * launch resumes it. Pages may share an identity because the server runs its disconnect side
  * effects (the PvP forfeit, the character row's removal) only when the identity's LAST live
  * connection ends. A device-kept token stays readable by every script in the page's origin for
