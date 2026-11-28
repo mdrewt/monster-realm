@@ -1207,8 +1207,8 @@ closes, on a join and on a reconnect. `main.ts` reads the motion preference in t
 and hands the tactical shell a getter of it. `shell/notices.ts` owns the trade and challenge
 requests waiting on this client: the request keys the player dismissed, those already announced
 and those answered, and the trade sessions whose editor this client opened. It builds the notice
-input from those sets, the store, the identity and the error and evolution views
-(`noticeInput`), and it gives the requests still waiting on an answer (`livePending`) and the
+input from the dismissed and answered keys, the opened sessions, the store, the identity and the
+error and evolution views (`noticeInput`), and it gives the requests still waiting on an answer (`livePending`) and the
 line a request reads in the banner, the sheet and the announcement (`requestLine`). Only that
 module changes the four sets, and it exports the announced and answered keys as read-only views.
 `main.ts` calls its owner functions:

@@ -50,6 +50,9 @@ const EXPORTS = [
   'requestLine',
 ];
 
+const E_ACUTE = String.fromCharCode(0x00e9);
+const RSQUO = String.fromCharCode(0x2019);
+
 const ME = 'a1'.repeat(32);
 const PEER = 'b2'.repeat(32);
 const OTHER = 'c3'.repeat(32);
@@ -223,6 +226,14 @@ describe('shell/notices', () => {
     expect(dismissedKeys(m)).toEqual(['session-1']);
   });
 
+  it('releaseAnswered removes only the exact key, not a longer key it prefixes', async () => {
+    const m = await fresh();
+    m.n.markAnswered('session-1');
+    m.n.markAnswered('session-11');
+    m.n.releaseAnswered('session-1')();
+    expect(sortedKeys(m.n.answeredRequests)).toEqual(['session-11']);
+  });
+
   it('forgetRequests empties the dismissed, announced and answered sets and keeps the opened one', async () => {
     const m = await fresh();
     seed(m);
@@ -260,6 +271,24 @@ describe('shell/notices', () => {
     m.n.releaseAnswered('challenge-7')();
     m.n.releaseAnswered('session-8')();
     expect(sortedKeys(m.n.noticeInput().dismissed)).toEqual(['challenge-7', 'session-8']);
+  });
+
+  it('forgetClosedSession removes only the exact id and key, not a longer id or key they prefix', async () => {
+    const m = await fresh();
+    m.n.markSessionOpened(1n);
+    m.n.markSessionOpened(11n);
+    for (const key of ['session-1', 'session-11']) {
+      m.n.dismissRequest(key);
+      m.n.markAnnounced(key);
+      m.n.markAnswered(key);
+    }
+    m.n.forgetClosedSession(1n);
+    expect(openedIds(m)).toEqual([11n]);
+    expect(sortedKeys(m.n.announcedRequests)).toEqual(['session-11']);
+    expect(sortedKeys(m.n.answeredRequests)).toEqual(['session-11']);
+    // With the answered key released, `dismissed` is the dismissed set alone.
+    m.n.releaseAnswered('session-11')();
+    expect(sortedKeys(m.n.noticeInput().dismissed)).toEqual(['session-11']);
   });
 
   it('noticeInput carries the store rows and the adopted identity, empty before any', async () => {
@@ -319,6 +348,8 @@ describe('shell/notices', () => {
     m.n.dismissRequest('session-1');
     m.n.dismissRequest('challenge-2');
     m.n.markAnswered('challenge-9');
+    // An announced key that is neither dismissed nor answered stays out of the union.
+    m.n.markAnnounced('session-5');
     expect(sortedKeys(m.n.noticeInput().dismissed)).toEqual([
       'challenge-2',
       'challenge-9',
@@ -349,6 +380,8 @@ describe('shell/notices', () => {
     const m = await fresh();
     seedRequests(m);
     m.n.markAnswered('session-11');
+    // An announced request is still waiting: only the answered one leaves.
+    m.n.markAnnounced('challenge-21');
     expect(liveKeys(m)).toEqual(['challenge-21']);
   });
 
@@ -369,17 +402,17 @@ describe('shell/notices', () => {
     expect(liveKeys(m)).toEqual(['challenge-21']);
   });
 
-  describe('requestLine in English', () => {
-    const notice = (over: Partial<RequestNotice>): RequestNotice => ({
-      kind: 'request',
-      key: 'session-5',
-      request: 'trade',
-      id: 5n,
-      fromName: 'Pia',
-      createdAtMs: 1n,
-      ...over,
-    });
+  const notice = (over: Partial<RequestNotice>): RequestNotice => ({
+    kind: 'request',
+    key: 'session-5',
+    request: 'trade',
+    id: 5n,
+    fromName: 'Pia',
+    createdAtMs: 1n,
+    ...over,
+  });
 
+  describe('requestLine in English', () => {
     async function english(): Promise<Loaded> {
       const m = await fresh();
       m.resolver.setLocale('en');
@@ -406,5 +439,24 @@ describe('shell/notices', () => {
       const m = await english();
       expect(m.n.requestLine(notice({}))).toBe('Pia wants to trade');
     });
+  });
+
+  // The request line resolves through the catalog of the current locale.
+  it('reads each request line in French under the French locale', async () => {
+    const m = await fresh();
+    m.resolver.setLocale('fr');
+    try {
+      const challengeLine = m.n.requestLine(
+        notice({ key: 'challenge-4', request: 'challenge', id: 4n, fromName: 'Oto' }),
+      );
+      expect(challengeLine).toBe(`Oto vous d${E_ACUTE}fie en combat`);
+      const countLine = m.n.requestLine(
+        notice({ count: 3, keys: ['session-5', 'session-6', 'session-7'] }),
+      );
+      expect(countLine).toBe(`3 demandes d${RSQUO}${E_ACUTE}change`);
+      expect(m.n.requestLine(notice({}))).toBe(`Pia veut ${E_ACUTE}changer`);
+    } finally {
+      m.resolver.setLocale('en');
+    }
   });
 });

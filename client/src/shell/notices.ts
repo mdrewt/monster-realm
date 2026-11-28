@@ -1,7 +1,7 @@
-// shell/notices — the trade and challenge requests waiting on this client: the keys the player
-// dismissed, announced and answered, the sessions whose editor this client opened, the notice input
-// built from them and the store, the requests still waiting on an answer and the line a request
-// reads. Only this module changes the four sets: every other module calls its owner functions, and
+// shell/notices — the trade and challenge requests waiting on this client: the request keys the
+// player dismissed, those already announced and those answered, the sessions whose editor this
+// client opened, the notice input built from them and the store, the requests still waiting on an
+// answer and the line a request reads. Only this module changes the four sets: every other module calls its owner functions, and
 // reads the announced and answered keys through read-only views. Module scope builds the four empty
 // sets and nothing else: it registers nothing, writes nothing to the document and resolves no string.
 import { tf } from '../ui/i18n/resolver';
@@ -22,7 +22,8 @@ export const announcedRequests: ReadonlySet<string> = announced;
 const answered = new Set<string>();
 export const answeredRequests: ReadonlySet<string> = answered;
 
-/** An answer to the request `key` was sent. */
+/** This client answers the request `key`: it stays out of the pending requests and the banner
+ *  until the server row changes or `releaseAnswered` runs. */
 export function markAnswered(key: string): void {
   answered.add(key);
 }
@@ -40,7 +41,7 @@ export function dismissRequest(key: string): void {
   dismissedRequests.add(key);
 }
 
-/** The request `key` was announced. */
+/** The request `key` counts as announced: its arrival is not announced again. */
 export function markAnnounced(key: string): void {
   announced.add(key);
 }

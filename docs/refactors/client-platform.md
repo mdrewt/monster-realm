@@ -242,8 +242,8 @@ lines name 213 symbols, and 208 of them are declared in `main.ts`.
   have an owner: `shell/config.ts` holds four sign-in constants (`OPERATED_BY_US`, `OIDC_ISSUER`,
   `SIGN_IN_MODE`, `ACCOUNT_REQUIRED`), `shell/notices.ts` holds `openedTradeSessions`, and
   section 4 gives the rest one: `SIGN_IN_OFFER`; the trade editor (`pendingTradeOpen`,
-  `TRADE_OPEN_WAIT_MS`,
-  `knownSessionIds`, `resetTradeSessionState`, `openTradeEditor`, `closeTradeEditor`, `tradeOpenExpired`); the sign-in gate (`signInGate`,
+  `TRADE_OPEN_WAIT_MS`, `knownSessionIds`, `resetTradeSessionState`, `openTradeEditor`,
+  `closeTradeEditor`, `tradeOpenExpired`); the sign-in gate (`signInGate`,
   `saidGateLine`, `signInGateView`, `showSignInGate`, `lowerSignInGate`, `applySignInGate`,
   `holdSignInGate`); the pad poll (`TerminalPhase`, `terminalPhase`, `padPhase`,
   `pollTerminalPad`, `pollPad`, `pressEdges`, `settleControlsCapture`); the battle playback
@@ -278,11 +278,11 @@ moving them into those four modules changes no call to `dispatch` or `applyStack
 
 ### 2.3 Disposition of extractions 7 to 18
 
-Each of the twelve is built or carried into section 4, which is the one list; `client-shell.md`
-keeps its rules, module map, ports, pumps and owner tables and points here. The numbers in the
-first column are the list's at `192b8b3d`, not the rows of the module map. "Kept" means the same
-module takes the same responsibility, with the symbols section 4 lists. None is superseded and
-none is dropped.
+Each of the twelve is carried into section 4, which is the one list, or is built;
+`client-shell.md` keeps its rules, module map, ports, pumps and owner tables and points here. The
+numbers in the first column are the list's at `192b8b3d`, not the rows of the module map. "Kept"
+means the same module takes the same responsibility, with the symbols section 4 lists or, once
+built, the symbols it holds. None is superseded and none is dropped.
 
 | Extraction | Module | Disposition | Section 4 |
 |---|---|---|---|
