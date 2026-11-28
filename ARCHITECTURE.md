@@ -395,6 +395,21 @@ call or by the tick.
   becomes `Recruited`, leaves the board and the initiative, and is never a `Ko`,
   so the settlement credits no XP for it. After a battle ends, only the latest
   finished battle per player is kept.
+- **Reach.** The world's interaction target is one game-core rule, `game_core::interact_candidates`
+  (exported to the client as `interact_candidates_coded`): the entities on `pos.step(facing)`, else
+  on the character's own tile, same zone only, ordered NPC, heal, player, then id. The reducers
+  check range more permissively. `talk` accepts `TALK_RANGE` (2) from the NPC's current tile.
+  `open_trade_session` and `challenge_pvp` refuse a partner outside
+  `game_core::interact::within_interact_range` (same zone, Manhattan distance at most
+  `TALK_RANGE`), and `heal_party` refuses a caller outside that range of the heal location's tile.
+  `buy` and `sell` refuse a caller outside `game_core::interact::within_npc_reach` of an NPC
+  offering that shop (`sell`: any shop): the same zone and at most `TALK_RANGE + wander_radius`
+  from the NPC's home tile. Each of those five has one message for every out-of-range case. In
+  `challenge_pvp` the range check runs right after "target is joined and online" and before the
+  checks that answer from the target's account, battles and pending challenges; in `buy`, `sell`
+  and `heal_party` it runs after the deletion gate and before the battle guard and every read of
+  the caller's wallet, inventory and cooldown. `accept_challenge` and `confirm_trade_session` check
+  no range. `character`, `npc` and `heal_location_row` are public tables.
 - **PvP.** The `battle` table is private; participants read it through
   `my_battle`. The battle checks are `guards::is_in_ongoing_battle` (the player,
   in either role) and `guards::reject_if_in_battle` (the monster, in either party),
@@ -774,6 +789,17 @@ moment of the read. `main.ts` binds at each open (`bindShop`, `bindHealLocation`
 closes, on a join and on a reconnect. `main.ts` reads the motion preference in the frame loop
 and hands the tactical shell a getter of it.
 
+A lower shell module reaches upward only through a port `main.ts` installs: the host of the world
+hint, what the battle views need from `dispatch` and the stack, and the Gamepad API's fault sink,
+which logs to the console until installed. Every `client/src/main.*.test.ts` suite resets the
+module registry and imports `./main`. Of the batch listeners `main.ts` registers, `reconcileStack`
+runs first of those that show or hide a view, and the stack sync and the adapters' observe run
+last.
+
+The build (`client/vite.config.ts`) sets `build.target: 'es2022'` and has no top-level-await
+transform (`vite-plugin-top-level-await` is the one it leaves out). `vite-plugin-wasm` resolves the
+wasm-pack `bundler` package, and the browser awaits its init at module top level.
+
 ### Connection and store
 
 `net/connection.ts` builds the SpacetimeDB connection from the target in `shell/config.ts`
@@ -985,6 +1011,29 @@ it or its reducer call rejects, and a reconnect clears the set.
   (`atlasAssets.ts`), and from `placeholderAssets.ts`'s monochrome shapes when the atlas
   fails to load; both show facing and action without depending on colour.
 
+**Scale.** `viewportScale` (`render/viewport.ts`) is the one scale function. It returns the
+integer `deviceScale` the world renders at and the continuous `uiScale`, the shorter CSS axis over
+720 clamped to [0.875, 3]. `installResizeHandler` writes `uiScale` to `--mr-ui-scale` on
+`documentElement` at the same event that resizes the renderer, and `world.ts` reads the same
+function at that event. The one root rule,
+`:root[style*="--mr-ui-scale"] { font-size: calc(100% * var(--mr-ui-scale) * var(--mr-text-step, 1)); }`,
+carries it to every rem token; until the first write it does not match and the root stays at
+100%. The player's text size (×1, ×1.5 or ×2, from Controls › Display, `ui/displayPrefs.ts`) is
+`--mr-text-step`, written at import, before the first scale write. The selector is keyed on the
+write because happy-dom cannot compute rem through a `calc()` root font-size (it reads `NaNpx`),
+and suites such as `frame.test.ts` load the real sheet without the resize seam.
+
+**One frame owner.** `appInitOptions` sets `autoStart: false`, so Pixi's own render ticker stays
+stopped; `WorldRenderer.render` draws once at the end of each frame-loop frame, and
+`WorldRenderer.resize` draws because a resize clears the canvas. The renderer sets
+`renderer.limits.maxBatchableTextures` to `MAX_BATCH_TEXTURES` (4, `render/config.ts`) after init
+and after every WebGL context restore. On a restore it also re-bakes the terrain chunk textures and
+drops the generated placeholder character textures (`AssetProvider.contextRestored`). The
+flat-terrain fallback's large `Graphics` uses a separate Pixi shader built at the device limit,
+which the cap does not reach. `client/e2e/render-context.spec.ts` loses and restores the context in
+a real browser, compares the canvas before and after, and counts one canvas clear per animation
+frame.
+
 **Terrain grammar.** Each zone-map glyph is a terrain class. The class table is
 `TileKind` (`game-core/src/types.rs:96`), and it is the one source of glyph,
 walkability and encounter flag (`TileKind::from_char`, `types.rs:141`;
@@ -1002,7 +1051,13 @@ terrain layer or missing frame gives the flat-rect fallback with one warning.
 PNG served from `client/public/assets/` (`ART_REGISTRY`, `registry.ts:126`), aggregated
 from one pack file per asset family under `render/art/packs/`. The packs are terrain,
 characters, landmarks, monsters, battle and grade. `validateArtRegistry`
-(`registry.ts:91`) and the row types reject image-model output and unaccepted licences.
+(`registry.ts:91`) and the row types reject image-model output and unaccepted licences. A row
+records the stable atlas key, file, kind, sheet and frame size, scale, source (the generator path,
+or the pack's URL), license and provenance tag; a row for a file from a generator since deleted
+cites it as `<path>@<commit>`. The validator rejects a duplicate key or file, a sprite, tile or
+normal frame off the 16 px grid, a scale other than 1, a malformed key and an empty attribution.
+Its colocated test runs it over the real rows and checks each row against the served directory and
+the PNG headers.
 Each row's atlas key is stable, so final art is a file swap. The packs also export what
 the renderer loads. `TERRAIN_KIT_CLASSES` (`render/art/packs/terrain.ts:60`) maps each
 class to its frame keys, and `LIVE_KEYFRAME` (`render/art/packs/grade.ts:13`) is the
@@ -1034,7 +1089,12 @@ filters and attaches them to the world container only, so the DOM UI is never fi
 An unsupported renderer, a pass that throws while it is built, or a throw from the probe
 frame drawn after the build disables the whole stack with one warning. The
 renderer starts with every pass off (`world.ts:255`), and the live game keeps it off
-(DECISIONS.md "The world post stack is `pixi-filters`…"). `setPostStack`
+(DECISIONS.md "The world post stack is `pixi-filters`…"). The filters are `pixi-filters` `6.1.5`,
+pinned exactly in `client/package.json` and imported by subpath (`simple-lightmap`,
+`advanced-bloom`, `godray`, `color-map`). The plan also takes what the renderer supports; each
+filter runs at the renderer's resolution, and the LUT samples `nearest`. The godray time is
+`godrayTime(nowMs, reduceMotion)`. The software-rasteriser check a build that turns the stack on
+needs would read `UNMASKED_RENDERER_WEBGL`. `setPostStack`
 (`world.ts:343`) turns passes on: the look-dev scene uses it, and the world-art e2e uses
 it through the DEV `__game().setPostStack` hook.
 
@@ -1090,18 +1150,91 @@ from the context table, the live bindings and the catalog. How to Play (`ui/help
 `ui/screens/helpScreen.ts`, `ui/helpView.ts`) is catalog copy: an Introduction, ending in a Report a
 problem row, and an Encyclopedia of the game's terms, whose entries open as the ContextSheet's detail
 variant in the same frame. At
-the world base, A acts on the target that the wasm `interact_candidates_coded` export picks (an NPC, a
-shop or a heal tile within talk range). The server re-checks the range.
+the world base, A acts on the target that the wasm `interact_candidates_coded` export picks: the
+entity in front, else on the character's own tile ("server-module: the authority", Reach). The
+server checks its own, wider range.
+
+Every input resolves through the binding table to the virtual buttons; the tables persist in
+`localStorage['mr.controls']` (versioned), and `PROTECTED_BUTTONS` (`input/bindings.ts`) always keep
+a key. `SCREEN_POLICY` is a total record per frame: its owner, battle behaviour and battle safety.
+The client closes a server-owned frame only by sending its reducer (`dismissDialogue` for the
+dialogue). Every frame is a class-styled `.mr-frame` inside `#game-screen`, and menus are D-pad
+lists, grids and tabs (`ui/nav.ts`). `main.ts` routes Escape alone in the capture phase, so a view's
+`stopPropagation` cannot trap it; every other key keeps the bubble phase, where text-entry views
+shield their fields. Each view keeps its state in a pure model (`*Model.ts`) with a thin DOM view.
+
+**Opening a frame.** Every player open goes through `openFrame` in `main.ts`, which pushes the frame
+and then shows its view; `contextStep`'s same-id push no-op is the one dedup. The trade, challenge
+and leaderboard panels are the one `social` frame. The visibility mirror sees only `MIRRORED_IDS`
+(`ui/contextStack.ts`): `battleView`, which presents the battle base and the terminal outcome, and
+`dialogueView`. A player view that closes itself has its frame popped at the next sync
+(`hiddenPops`). `main.ts`'s three tables (probes, hide handles, lent views: `overlayProbes`,
+`overlayHandles`, `screenViews`) keep rows only for the mirrored ids.
+
+**Hold edge.** A frame's `RouteContext.hold` (`input/router.ts`) lists its hold-capable buttons,
+and `HOLD_MS` is 500. A hold reaches the adapter as `NavInput.hold` (`ui/nav.ts`); `resetRepeat` and
+`releaseAll` drop an armed press. `battleHoldButtons` (`ui/screens/battleScreen.ts`) lists Y on the
+bare tactical battle base while `TacticsBattle.clearPlanHoldable` holds. A Y tap writes the
+hold-to-clear line ("Hold F to clear the plan" on the default keyboard; "Y" where the last-used
+device binds nothing to it), and a Y hold sends `cancel_queue` through the same path as the
+confirmed Clear plan row.
+
+**Battle frame.** `refreshBattle` routes by the tactical row's phase through `battleRenderer`
+(Deploying → the deploy panel, Active → the tactical shell, Finished → the results panel, no row →
+`none`). `renderableBattle` is the one predicate `reconcileStack` and `refreshBattle` share. The
+three roots share the `battleView` record in `OVERLAY_A11Y`, the adopted live region and the focus
+trap; the e2e suites select `[data-testid="battle-title"]` and `aria-modal` on that one id.
+`activeBattleView`, `tacticalOwnsStart` and `battleHint` read the shown view, never the phase.
+
+**Feedback channels.** `ui/feedbackPolicy.ts` assigns each `MessageKind` its channel, in a table
+that `satisfies Record<MessageKind, PolicyRow>`. The world line is `#status`; the toast is one
+`.mr-toast` region (`ui/toast.ts`), announced once through `#a11y-live` (the notice pump) and hidden
+after `TOAST_MS` of the frame clock. `sendGuarded` names a kind per send site
+(`SEND_REJECT_KIND`); `main.ts`'s care, shop and rename outcomes name a kind. The menu strip's hint
+order is the wireframes' WF1-A9. The policy test pins the list of action-required toast kinds and
+the on-screen state each names. The strip has zero layout height: its height and negative bottom
+margin cancel, it sits in a 2rem bottom reserve on `.mr-frame` and `.mr-shell`, and it is sticky
+with `bottom: -2rem`, because Chromium measures sticky offsets inside the scroller's padding. Only
+the main menu's strip shows a persistent hint; on any other frame it is on `#status`.
+
+**Menu tokens.** The `--mr-*` tokens live in `client/src/styles.css`, with the frame, chip and
+banner border widths as `--mr-border-width` and `--mr-border-thin` and every color's
+`prefers-contrast: more` value in the sheet's last block. The focus-ring checks in
+`ui/overlayA11yWiring.test.ts` require 3:1, which `--mr-focus` misses across the light active row.
+
+**Sheets.** A Monsters frame's sheet is `createContextSheet` (`ui/contextSheet.ts`, root
+`[data-context-sheet]`) mounted in `#monsters-panel` (`position:relative`, `ui/boxView.ts`) and
+placed by `anchorSheet`. Its row ids are `monstersSheet-root-<key>`, and the heading keeps
+`monsters-sheet-name`. A sub-list ends with Back (key `back`, `BACK_KEY` in `ui/monstersModel.ts`),
+painted with `kit.sheet.back`; the Close row is `kit.sheet.close`. The Social row sheet's Back is
+appended in `ui/screens/socialScreen.ts` and `ui/tradeView.ts`. The world sheets (the picker and
+the Y action sheet of `ui/actionSheetModel.ts`, the request sheet of `ui/noticeModel.ts`, the
+Challenge party-size confirm) paint inside `#interact-prompt` and are not placed by
+`placeContextSheet`; their Close row is `CLOSE_KEY`, a layout row and not a `SheetEntry`. A fresh
+Select over one closes it and falls through to the base (`worldButton` in
+`ui/screens/worldScreen.ts`, `baseButton` in `ui/screens/index.ts`), which answers `toggleHelp`.
+The chip-only prompt is `pointer-events:none`.
+
+**Profile.** `profileView` (`ui/profileView.ts`) is the one overlay; `renameView.ts`, `claimView.ts`
+and `privacyView.ts` are its sections and not `OverlayId`s (the overlay manifest test,
+`OR-MANIFEST-COMPLETE` in `overlayRegistry.test.ts`, names the three files as an exclusion). Its
+`SCREEN_POLICY` row is player / drop, and `RECONNECT_CLOSES` is true for it; `onReconnect` shows a
+claim prompt its own cycle raised again after the sweep. When a render refuses the focused control,
+the reseat target is the frame's Close (`fallbackRow`). The body does not take the list scroll cue
+`.mr-scroll`, and no section has a reset in `RECONNECT_RESETS`.
 
 Strings come from `ui/i18n/`: a `MessageId` union, total catalogs for `en` and `fr`, a
 resolver whose `t()`/`tf()` throw on a missing key, CLDR plural rules, and boot-time
 locale negotiation from `navigator.languages` (`locale.ts`). Accessibility is
 first-class: status conditions on the tactical board are named by the exhaustive
-`tactics.status.*` catalog keys (text, never colour alone; the 1v1 status badges and their
-`A11Y_TOKENS` link left with the 1v1 view in bt-17), focus
+`tactics.status.*` catalog keys (text, never colour alone), focus
 is trapped in modals (`focusTrap.ts`), announcements go through live regions
 (`liveRegion.ts`, `announcements.ts`), and `Element.animate` is banned
-(`client/lint/no-waapi.grit`) because it ignores `prefers-reduced-motion`.
+(`client/lint/no-waapi.grit`, a Biome plugin) because it ignores `prefers-reduced-motion`.
+`setLocale` throws on an unregistered locale. One whole-tree scan
+(`ui/i18n/hardcodedStrings.test.ts`) asserts that no non-test client file writes a raw string to a
+text sink; its sink floor only proves the scan still sees the tree, and each view's «key»-sentinel
+runtime tests own its behaviour.
 
 The constructed overlays (the battle frame's three roots under `client/src/tactics`, the box,
 raising and evolution views) follow one a11y wiring contract (`ui/overlayA11y.ts`): the root is
@@ -1282,7 +1415,7 @@ root, so opening one never closes a sibling.
 | Evals | `evals/*.eval.mjs`: wasm parity, feature isolation, determinism, schema and type snapshots, append-only ids, content version, bindings drift, client-surface privacy, sprite-sheet format, and the live account flow | `just eval` |
 | Node suites | `ops/observability/**/*.test.mjs`, `scripts/*.test.mjs` | `just test` |
 | Browser e2e | `client/e2e/*.spec.ts` (Playwright, two windows against a real SpacetimeDB and a `dev_reducers` build) | `just e2e`, CI `e2e-shard` jobs (one shard each; `e2e` checks their union is the whole suite) |
-| Nightly | game-core mutation testing (zero missed), server mutation survivor cap, client coverage (report only), criterion perf budgets, republish-over-live-data smoke | `.github/workflows/nightly.yml` |
+| Nightly | game-core mutation testing (zero missed), client coverage (report only), criterion perf budgets, republish-over-live-data smoke; weekly, the full server mutation sweep (report only) | `.github/workflows/nightly.yml` |
 
 The module-definition check (`findDefinitionViolations` in
 `scripts/verify-release-reducers.mjs`) reads what `extract-schema` prints and refuses an
@@ -1304,6 +1437,15 @@ with `vendor/native-host.patch` undone, matches the hashes in `vendor/PRISTINE.s
 every changed line is a `#[cfg]` attribute selecting on wasm what the original selected; each
 SpacetimeDB hop re-records them (`docs/runbooks/spacetimedb-upgrade.md`). CI's `cargo audit`
 skips packages not from crates.io, so the two copies are checked at each hop by hand.
+
+Mutation testing. The nightly `mutation` job runs game-core as six cargo-mutants `--shard k/n`
+jobs, each its own zero-tolerance verdict. The pull-request job `mutation-diff` (`just mutate-diff
+origin/master monster-realm-module`) mutates the server-module lines the change adds or edits,
+diffed from the merge base, and fails on a survivor. The weekly `mutation-server` sweep (eight
+shards) files its survivors as one issue on the default branch; a shard is red only when
+cargo-mutants gave no verdict. An equivalent mutant is excluded in `.cargo/mutants.toml` with its
+written proof; the bodies of `guards::log_reject`, `guards::json_escape`, `observability::mr_log`
+and `mr_log_breadcrumb` are excluded by name.
 
 `just ci` is the merge gate: lint, typecheck, test, eval, security, wasm,
 client-typecheck, client-test, client-verify-build, and observability-validate.
