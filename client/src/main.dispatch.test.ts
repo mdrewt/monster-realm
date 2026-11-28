@@ -5291,7 +5291,7 @@ function so2StripComments(src: string): string {
 /** main.ts, comments blanked, as lines. */
 const so2MainLines = (): string[] =>
   so2StripComments(
-    readFileSync(pathJoin(pathDirname(fileURLToPath(import.meta.url)), 'main.ts'), 'utf8'),
+    readFileSync(pathJoin(pathDirname(fileURLToPath(import.meta.url)), 'shell/frames.ts'), 'utf8'),
   ).split('\n');
 
 /** The lines strictly between the one column-0 line that starts with `header` and the next line that

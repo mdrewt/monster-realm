@@ -1438,15 +1438,16 @@ The binding table, the stack, the router's key phases, the catalog and the strin
 
 ## Context stack ownership
 
-**Decision.** The context stack owns the player's frames. Every player open (a menu entry, an
-accelerator, a world interaction, the deferred shop open, a claim lifecycle prompt) goes through one
-open path, which pushes the frame first and only then shows its view. A frame already on the stack
-is not pushed again, and the stack's own same-id push is the one dedup. The Social panels are one
-Social frame, and switching panels pushes and pops nothing. Only the server-owned overlays, the
-battle and the dialogue, are mirrored from their views' visibility, because they show themselves on
-server edges. A player view that closes itself has its frame popped at the next sync, never pushed.
-A player frame's probe, hide and view travel with its open. A movement-gate read derives from the
-stack as it stands and never syncs it.
+**Decision.** The context stack owns the player's frames, and `client/src/shell/frames.ts` owns the
+stack: only that module assigns it, and every other module only reads it. Every player open (a
+menu entry, an accelerator, a world interaction, the deferred shop open, a claim lifecycle prompt)
+goes through one open path, that module's `openFrame`, which pushes the frame first and only then
+shows its view. A frame already on the stack is not pushed again, and the stack's own same-id push
+is the one dedup. The Social panels are one Social frame, and switching panels pushes and pops
+nothing. Only the server-owned overlays, the battle and the dialogue, are mirrored from their
+views' visibility, because they show themselves on server edges. A player view that closes itself
+has its frame popped at the next sync, never pushed. A player frame's probe, hide and view travel
+with its open. A movement-gate read derives from the stack as it stands and never syncs it.
 
 **Why.** When the stack mirrored the views' self-managed visibility, every reader had to re-sync
 first: gate reads mutated the stack, a shown overlay could sit off the stack until the next key,
@@ -1455,9 +1456,10 @@ open path gives a gamepad the same open path as the keyboard, and makes "shown b
 stack" impossible for the player set.
 
 **Rules out.** Showing a player view outside the open path; pushing a player frame from visibility;
-a per-panel Social frame; merging the three mirrored-frame tables (probes, hide handles, lent views)
-into one registry (three small total records with byte-identical thunks are the defense against
-copy-paste sibling bugs); a gate read that pushes, pops, shows or hides a frame.
+a per-panel Social frame; merging the three mirrored-frame tables in `client/src/shell/frames.ts`
+(probes, hide handles, lent views) into one registry (three small total records with byte-identical
+thunks are the defense against copy-paste sibling bugs); a gate read that pushes, pops, shows or
+hides a frame; an assignment to the stack outside `client/src/shell/frames.ts`.
 
 The open path and the mirrored ids: `ARCHITECTURE.md` "Client", UI.
 

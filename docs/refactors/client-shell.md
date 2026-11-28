@@ -100,7 +100,7 @@ registers its first listener. A port member called before the install throws.
 |---|---|---|
 | `feedback.ts` | whether the main menu is the top frame, and a repaint of the menu | none: `hintOnMenu` asks the host `installHintHost` took (`menuOnTop`), and `paintWorldHint` calls its `repaintMenu` |
 | `commandPort.ts`, for `battleFrame.ts`, `screens.ts`, `menu.ts` and `interact.ts` | `dispatch` and `applyStack` | none: `installCommandPort` took both. From `battleFrame.ts`, `buildDeployPanel`, `buildResultsPanel` and `tacticsShellDeps` call the port's `dispatch` and `popOverBattleBeforeSwitch` its `applyStack`; from `main.ts`, `runInteract`, `applyMenuStep` and `closeTradeEditor` call its `dispatch` and `showSignInGate` its `applyStack` |
-| `battleFrame.ts` | the stack as the battle frame reads it, and the outcome edge | none: `installBattlePort` took both. `popOverBattleBeforeSwitch` and `buildResultsPanel` read the stack through the port's `stack`, and `holdResultsForPlayback` clears `outcomeShownAtMs` and `autoContinuedAtMs` through its `clearOutcomeEdge` |
+| `battleFrame.ts` | the stack as the battle frame reads it, and the outcome edge | none: `installBattlePort` took both. `popOverBattleBeforeSwitch` and `buildResultsPanel` read the stack through the port's `stack`, and `holdResultsForPlayback` clears `outcomeShownAtMs` and `autoContinuedAtMs` through its `clearOutcomeEdge`, which is `frames.ts`'s owner function of that name |
 
 The command port is one typed object with two members, declared in a module that imports no
 shell module. The battle port carries what only the battle frame needs. The mount element is
@@ -112,14 +112,14 @@ part of neither: `main()` mounts it at boot (`mountBattleFrame`), and until then
 A pump is a part of the frame loop that writes its owner's bindings, moved into the owner as one
 function. The frame loop in `main()` stays the ordered list of pump calls. A pump is not a port:
 what it needs from a module it may not import, or from a local of `main()`, arrives as one
-parameter object, whose members it calls in the position the frame loop calls them in; what the
-frame loop must act on, it returns.
+parameter object, whose members it calls in the position the frame loop calls them in, or, when it
+needs only the frame's clock reading, as that number; what the frame loop must act on, it returns.
 
 | Pump | Owner | Its parameter object carries | It returns |
 |---|---|---|---|
 | the announcement edge and the notice step (`pumpAnnouncements`) | `feedback.ts` | the frame's clock reading, the top overlay (`topOverlay`), the line `pumpStillThere` returned, and the focus return on a world edge (`closeLeftFocusAdrift`, `focusAdrift`, `worldCanvasEl`) | nothing |
-| the results auto-advance | `frames.ts` | nothing | whether to continue; `main()` then calls `dispatch` |
-| the care-readiness tick | `frames.ts` | nothing | nothing |
+| the results auto-advance (`takeResultsAutoContinue`) | `frames.ts` | the frame's clock reading, as a number | whether to continue; `main()` then calls `dispatch` |
+| the care-readiness tick (`pumpCareReadiness`) | `frames.ts` | the frame's clock reading, as a number | nothing |
 | the privacy step | `account.ts` | the paint of the countdown banner, a local of `main()` | nothing |
 | the world step: drain, re-issue, resolve, latch, camera, render, frame sample | `movement.ts` | nothing | nothing |
 
@@ -138,8 +138,8 @@ listed, and a read a pump receives through its parameter object is a read by `ma
 | Binding | Owner | Readers | Outside writers |
 |---|---|---|---|
 | `contextStack` | `frames.ts` | `screens`, `menu`, `commands`, `input`, `devHooks`, `main`; `battleFrame` through its port | the `onReconnect` sweep: reset |
-| `outcomeShownAtMs` | `frames.ts` | `input` | none |
-| `autoContinuedAtMs` | `frames.ts` | none | the frame loop's results auto-advance: pump |
+| `outcomeShownAtMs` | `frames.ts` | `input` | the battle port's outcome-edge clear, which `main.ts` installs and `battleFrame` calls: event |
+| `autoContinuedAtMs` | `frames.ts` | none | the frame loop's results auto-advance: pump; the battle port's outcome-edge clear, which `main.ts` installs and `battleFrame` calls: event |
 | `syncedTop` | `frames.ts` | none | none |
 | `closeLeftFocusAdrift` | `frames.ts` | `main` | none |
 | `lastCareTickAtMs` | `frames.ts` | none | the frame loop's care-readiness tick: pump |
@@ -293,8 +293,6 @@ function takes over.
 
 | Owner | Proposed function | Takes over |
 |---|---|---|
-| `frames.ts` | `sweepForReconnect` | the `reconnectSweep` block of `onReconnect` |
-| `frames.ts` | `takeResultsAutoContinue`, `pumpCareReadiness` | the two frame-loop parts that write `autoContinuedAtMs` and `lastCareTickAtMs` |
 | `movement.ts` | `adoptRenderer`, `adoptTelemetry` | the `renderer` and `telemetry` assignments |
 | `movement.ts` | `stepWorldFrame` | the frame loop's world step |
 | `movement.ts` | `setRawMapZoneForTest` | the body of the test-only zone setter of that name, which `snapshot` goes on exposing |
@@ -364,8 +362,6 @@ is the tester's.
 
 | What reads `main.ts` | Follows | The edit |
 |---|---|---|
-| `client/src/main.dispatch.test.ts`: `movementGate` and `worldBaseLive` push, pop, show and hide nothing | `frames.ts` | the path; the two header needles gain `export` |
-| `client/src/main.dispatch.test.ts`: `overlayProbes`, `overlayHandles` and `screenViews` are three separate records with exactly the mirrored rows | `frames.ts` | the path only; the row text is unchanged |
 | `client/src/net/connection.test.ts`: `applyClaim` joins through `conn?.join()`, and the source never calls or names `joinGame` and never indexes `reducers` by bracket | `account.ts` | the path for `applyClaim`; the three absence checks read `main.ts` and every `shell/` module together |
 | `client/src/ui/screens/mainMenuScreen.test.ts`: the source holds `menuState` and reads no level off it | `menu.ts` | the scan reads `main.ts` and every `shell/` module together, so the absence checks widen and the length floor holds |
 | `client/src/ui/i18n/catalogParity.test.ts`: the roster of files that import the resolver, and the literal keys `main.ts` resolves | every module that imports the resolver | the roster gains the module; the key set splits between `main.ts` and the module, with the union unchanged |
@@ -381,10 +377,6 @@ holds the hooks.
 
 Prose that names `main.ts` as the home of a symbol follows the symbol, in the slice that moves it:
 
-- `docs/DECISIONS.md`, "Context stack ownership", in three places: the home of `openFrame`, and
-  "the three main.ts tables" in the decision and again under what it rules out. The `frames.ts`
-  extraction rewrites them in place to name `client/src/shell/frames.ts`; the tables stay three
-  separate total records.
 - `docs/DECISIONS.md`, "Four message channels, chosen by one policy table", which names
   `main.ts` for the senders it still holds (the battle refusal, the care, shop and rename
   outcomes): the `commands.ts` extraction.

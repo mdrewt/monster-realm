@@ -242,14 +242,14 @@ lines name 213 symbols, and 208 of them are declared in `main.ts`.
   have an owner: `shell/config.ts` holds four sign-in constants (`OPERATED_BY_US`, `OIDC_ISSUER`,
   `SIGN_IN_MODE`, `ACCOUNT_REQUIRED`), `shell/notices.ts` holds `openedTradeSessions`,
   `shell/battleFrame.ts` holds the battle playback (`resultsAwaitDrain`, `serverClock`,
-  `feedTacticsShell`, `holdResultsForPlayback`), and section 4 gives the rest one:
-  `SIGN_IN_OFFER`; the trade editor (`pendingTradeOpen`,
+  `feedTacticsShell`, `holdResultsForPlayback`), `shell/frames.ts` holds `worldIsBare`, and
+  section 4 gives the rest one: `SIGN_IN_OFFER`; the trade editor (`pendingTradeOpen`,
   `TRADE_OPEN_WAIT_MS`, `knownSessionIds`, `resetTradeSessionState`, `openTradeEditor`,
   `closeTradeEditor`, `tradeOpenExpired`); the sign-in gate (`signInGate`,
   `saidGateLine`, `signInGateView`, `showSignInGate`, `lowerSignInGate`, `applySignInGate`,
   `holdSignInGate`); the pad poll (`TerminalPhase`, `terminalPhase`, `padPhase`,
   `pollTerminalPad`, `pollPad`, `pressEdges`, `settleControlsCapture`); and `owed`,
-  `lastRendered`, `worldRevealed`, `zoneWarpsById`, `zoneWarps`, `worldIsBare`, `ownNameModel`,
+  `lastRendered`, `worldRevealed`, `zoneWarpsById`, `zoneWarps`, `ownNameModel`,
   `evolutionNoticeOk`, `MrSessionOffer`, `mrSessionOffer`. `protocolMismatchLine` stays in
   `main.ts` beside the `connect` callback that calls it.
 - **`main.ts` registers 23 batch listeners.** Three have no place in that list's registration
@@ -263,7 +263,8 @@ lines name 213 symbols, and 208 of them are declared in `main.ts`.
   (2.2). The battle port serves `battleFrame.ts` alone.
 - **One lower module writes a higher one's bindings.** `holdResultsForPlayback`
   (`shell/battleFrame.ts`) clears `outcomeShownAtMs` and `autoContinuedAtMs`, which `frames.ts`
-  owns, through the battle port (2.2).
+  owns, through the battle port (2.2), whose `clearOutcomeEdge` is the `frames.ts` owner function
+  of that name.
 
 ### 2.2 The command port
 
@@ -292,7 +293,7 @@ built, the symbols it holds. None is superseded and none is dropped.
 |---|---|---|---|
 | 7 | `shell/notices.ts` | kept; takes `openedTradeSessions` as well | none: built |
 | 8 | `shell/battleFrame.ts` | kept; takes the battle playback symbols; its port carries the stack reads and the outcome edge, and the command port the rest | none: built |
-| 9 | `shell/frames.ts` | kept; takes `worldIsBare` | 6 |
+| 9 | `shell/frames.ts` | kept; takes `worldIsBare` | none: built |
 | 10 | `shell/movement.ts` | kept; takes `owed`, `lastRendered`, `worldRevealed`, `zoneWarpsById`, `zoneWarps` | 7 |
 | 11 | `shell/account.ts` | kept; takes `SIGN_IN_OFFER`, `ownNameModel` and the Name repaint; its export download calls `saveFile` | 8 |
 | 12 | `shell/screens.ts` | kept; takes the trade editor symbols | 9 |
@@ -366,7 +367,6 @@ fixed in the slice. The slice for a row deletes that row. The symbol lists are m
 
 | # | Module | Kind | Tier | Creates | Covering tests | Feature change |
 |---|---|---|---|---|---|---|
-| 6 | frames | interface | hard | `client/src/shell/frames.ts` | `client/src/main.dispatch.test.ts`, `client/src/main.reconnectStack.test.ts`, `client/src/main.a11yFocus.test.ts` | none added, none removed |
 | 7 | movement | interface | hard | `client/src/shell/movement.ts` | `client/src/main.input.test.ts`, `client/src/main.zoneCue.test.ts`, `client/src/main.worldReveal.test.ts`, `client/src/net/switchZoneAtomicity.test.ts` | none added, none removed |
 | 8 | account | interface | hard | `client/src/shell/account.ts` | `client/src/main.claimCode.test.ts`, `client/src/main.signInGate.test.ts`, `client/src/main.privacyWiring.test.ts`, `client/src/main.privacyCountdown.test.ts`, `client/src/main.exportTransport.test.ts` | none added, none removed |
 | 9 | screens | interface | hard | `client/src/shell/screens.ts` | `client/src/main.social.test.ts`, `client/src/main.shopBalance.test.ts`, `client/src/main.dialogueDismiss.test.ts`, `client/src/main.controls.test.ts`, `client/src/main.help.test.ts` | none added, none removed |
@@ -394,19 +394,6 @@ resolver gains the module when it resolves a string; this file;
 set. A row that moves boot wiring or a DEV hook (14, 15) runs the full end-to-end suite as
 well.
 
-6. `client/src/shell/frames.ts` takes `overlayProbes`, `overlayHandles`, `screenViews`,
-   `FrameOpen`, `frameOpens`, `frameOpenOf`, `screenHost`, `overlayVerdict`, `shownOverlays`,
-   `contextStack`, `runStackCommands`, `outcomeShownAtMs`, `autoContinuedAtMs`, `syncStack`,
-   `upperIds`, `shownPlayerFrames`, `panelShown`, `socialPanelView`, `hideFrame`, `topOverlay`,
-   `menuPlace`, `reconcileStack`, `movementGate`, `worldBaseLive`, `openFrame`, `openSeated`,
-   `topSocialFrame`, `syncedTop`, `closeLeftFocusAdrift`, `judgeCloseFocus`, `inHiddenSubtree`,
-   `focusInsideHiddenSubtree`, `focusAdrift`, `lastCareTickAtMs`, `CARE_READINESS_TICK_MS` and
-   `worldIsBare`. Touches beside the shell set: the two source needles of
-   `client/src/main.dispatch.test.ts` that follow `movementGate` and the mirrored tables, and
-   `docs/DECISIONS.md`, whose "Context stack ownership" entry names `main.ts` as their home.
-   Interface: `main` sweeps `contextStack` on reconnect and writes `autoContinuedAtMs` and
-   `lastCareTickAtMs` in the frame loop; the battle frame clears `outcomeShownAtMs` and
-   `autoContinuedAtMs` through its port.
 7. `client/src/shell/movement.ts` takes `rawMap`, `applyMove`, `predictor`, `resolver`,
    `renderer`, `telemetry`, `frameWindow`, `lastCamX`, `lastCamY`, `sawFractionalOwnMotion`,
    `resetPredictionState`, `zoneSyncFailureCount`, `switchZone`, `reconcileFromStore`,
