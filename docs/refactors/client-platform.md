@@ -241,8 +241,8 @@ lines name 213 symbols, and 208 of them are declared in `main.ts`.
 - **42 declarations are named by no line and are not in "What `main.ts` keeps".** 41 of them
   have an owner: `shell/config.ts` holds four sign-in constants (`OPERATED_BY_US`, `OIDC_ISSUER`,
   `SIGN_IN_MODE`, `ACCOUNT_REQUIRED`), and section 4 gives the rest one: `SIGN_IN_OFFER`; the
-  trade editor (`openedTradeSessions`, `pendingTradeOpen`, `TRADE_OPEN_WAIT_MS`, `knownSessionIds`, `resetTradeSessionState`,
-  `openTradeEditor`, `closeTradeEditor`, `tradeOpenExpired`); the sign-in gate (`signInGate`,
+  trade editor (`openedTradeSessions`, `pendingTradeOpen`, `TRADE_OPEN_WAIT_MS`,
+  `knownSessionIds`, `resetTradeSessionState`, `openTradeEditor`, `closeTradeEditor`, `tradeOpenExpired`); the sign-in gate (`signInGate`,
   `saidGateLine`, `signInGateView`, `showSignInGate`, `lowerSignInGate`, `applySignInGate`,
   `holdSignInGate`); the pad poll (`TerminalPhase`, `terminalPhase`, `padPhase`,
   `pollTerminalPad`, `pollPad`, `pressEdges`, `settleControlsCapture`); the battle playback
