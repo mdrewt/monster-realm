@@ -1396,15 +1396,18 @@ non-modal banner and world sheet, never a frame. Which overlay may open over ano
 table. Menus are D-pad lists, grids and tabs whose active item is a key, never an index or a pointer
 cursor. The hint bar and Help are generated from the context table, the live bindings and the
 catalog. Bindings persist per browser, and the D-pad, A, B and Start always keep a key. Every
-waiting Controls cell has a way out on the pad: the button a Pad cell shows, else the live B. The
-session terminal is outside the router, so on the pad the D-pad or the stick moves and A presses,
+waiting Controls cell has a way out on the pad: the button a Pad cell shows, else the live B, and
+the waiting line names it for a player on the pad. The session terminal is outside the router and
+the overlay registry, so on the pad the D-pad or the stick moves and A presses,
 while B and Start do nothing; a button held while the terminal opens, closes, arms or disarms its
 confirm step acts only once released and pressed again. Escape is routed ahead of every view, so no
-view can trap it; text-entry views shield their fields from the other keys' accelerators. Each view
-keeps its state in a pure model with a thin DOM view. A status condition is named by text, never by
-colour alone. All UI strings come from a total typed catalog (`en` and `fr`) whose lookup throws on
-a missing key or an unregistered locale. One whole-tree scan holds that no non-test client file writes a
-raw string to a text sink; each view's own runtime tests hold its behaviour.
+view can trap it (an Escape that ends an IME composition is the IME's); text-entry views shield their fields from the other keys' accelerators. Each view
+keeps its state in a pure model with a thin DOM view. Accessibility metadata for every overlay is
+one total record. A status condition is named by text, never by colour alone. All UI strings come
+from a total typed catalog (`en` and `fr`): a lookup throws on a missing key, and switching to an
+unregistered locale throws. One whole-tree scan holds that no non-test client file writes a raw
+string to a text sink; its sink floor only proves the scan still sees the tree, and each view's own
+runtime tests hold its behaviour.
 
 **Why.** A handheld-console grammar, where a few contextual buttons are primary and hotkeys are
 shortcuts, is the intended interface. One stack makes "back one level" and "exit everything"
@@ -1498,12 +1501,12 @@ module imports only the shell modules below it. A lower module reaches upward th
 caller swallows a throw (the pad's fault sink: a failing reporter must not stop the poll that
 releases held buttons), or through the parameter object of a frame-loop pump.
 
-**Why.** The client's suites boot it by importing `main.ts` into a fresh module registry, so
-module-level state in a shell module resets per boot and no suite changes how it boots. An import
+**Why.** Every `main.*` suite resets the module registry and imports `main.ts`, so module-level
+state in a shell module resets per test and no suite changes how it boots. An import
 cannot be assigned, so the compiler holds each binding to one writing module, and a moved body
 changes only by its imports or by the owner call that replaces a write. The order of the batch
-listeners is load-bearing (the stack's reconcile first of the listeners that show or hide a view;
-the stack sync and the adapters' observe last), and Biome reorders import statements, so
+listeners is load-bearing (the stack's reconcile ahead of every listener that shows the battle or
+the dialogue; the stack sync and the adapters' observe last), and Biome reorders import statements, so
 registration cannot follow module evaluation. The locale writes are the only import-time statements
 another module could observe, and in `main.ts` they run after every import.
 
@@ -1592,8 +1595,8 @@ render is never hidden; the stack still holds the battle base, and Start opens t
 terminal one is dismissed, with every view hidden in the same batch. The stack and the switch share
 one predicate for a renderable battle, so the stack never counts an unrenderable outcome. The three
 roots are built lazily on the first batch that routes to them, share the battle frame's one
-accessibility record, and keep their own hide idempotent. A reader of the battle view reads the
-shown view, never the phase.
+accessibility record, and keep their own hide idempotent. The active battle view, the battle hint
+and whether the tactical shell owns Start are read from the shown view, never the phase.
 
 **Why.** The overlay registry, the context stack and the accessibility record (the live region, the
 focus trap) key on one battle frame id. Two visible roots would be two titles and two modal dialogs;
@@ -1675,7 +1678,7 @@ chrome alone, and `100%` keeps the browser's font-size preference in the product
 the same function at the same event, so the smoothness contract does not move. Borders stay px
 tokens so they land on whole device pixels. The root rule matches only after the first write
 because the client's DOM test environment cannot compute rem through a `calc()` root font-size, and
-suites load the real sheet without the resize seam.
+some suites load the real sheet without the resize seam.
 
 **Rules out.** A fixed-ratio letterbox: the visible tile count and the map margin absorb the
 remainder, because a box would change how much world each window shows. Integer snapping of the
@@ -1691,8 +1694,8 @@ The scale function, the root rule and the text-size factor: `ARCHITECTURE.md` "C
 kind to one of four channels. The **hint line** is a frame's feedback strip, or the world line when
 no frame hosts it. The **toast** is one timed region for outcomes. The **modal** is a confirm sheet
 for decisions. The **blocking text box** is the dialogue. The table is total over the kinds, so a
-kind with no channel fails typecheck. Every sender goes through one routing module and names a kind
-at its send site; a battle refusal paints the toast and is announced at once. A toast is announced
+kind with no channel fails typecheck. Senders go through one routing module and name a kind at
+the send site; a battle refusal paints the toast directly and is announced at once. A toast is announced
 once through the one live region and hides after a fixed time on the frame clock. A persistent hint
 follows the top frame. On the main menu's strip it outranks the menu's own line: an action-required
 hint comes first, then a persistent state, then a disabled reason, then a Y-description. Otherwise
@@ -1842,7 +1845,7 @@ sprite batcher, which draws the whole kit-atlas world, and not the flat-terrain 
 is built at the device limit before the cap applies. With Pixi's ticker running beside the frame
 loop, Pixi draws the state the loop resolved on the previous animation frame; with one owner a frame
 is presented in the task that resolved it. Without the re-bake, the terrain stays blank after a
-context restore (30% of the canvas on the small zone, 98% on the large one).
+context restore (30% of the canvas on the small zone, 98% on the large one, the same day).
 
 **Rules out.** Starting Pixi's ticker, or adding a second `requestAnimationFrame` loop that draws; a
 canvas-clearing operation that does not draw afterwards; raising the texture cap without re-measuring

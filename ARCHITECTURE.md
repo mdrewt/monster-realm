@@ -789,12 +789,14 @@ moment of the read. `main.ts` binds at each open (`bindShop`, `bindHealLocation`
 closes, on a join and on a reconnect. `main.ts` reads the motion preference in the frame loop
 and hands the tactical shell a getter of it.
 
-A lower shell module reaches upward only through a port `main.ts` installs: the host of the world
-hint, what the battle views need from `dispatch` and the stack, and the Gamepad API's fault sink,
-which logs to the console until installed. Every `client/src/main.*.test.ts` suite resets the
-module registry and imports `./main`. Of the batch listeners `main.ts` registers, `reconcileStack`
-runs first of those that show or hide a view, and the stack sync and the adapters' observe run
-last.
+A lower shell module reaches upward through a port `main.ts` installs, or through the parameter
+object of a frame-loop pump. Two ports are installed: the world hint's host (`installHintHost`,
+`shell/feedback.ts`) and the Gamepad API's fault sink (`installPadFaultSink`,
+`shell/inputState.ts`), which logs to the console until installed. The port for what the battle
+views need from `dispatch` and the stack is planned in `docs/refactors/client-shell.md`. Every
+`client/src/main.*.test.ts` suite resets the module registry and imports `./main`. Of the batch
+listeners `main.ts` registers, `reconcileStack` runs ahead of every listener that shows the battle
+or the dialogue, and the stack sync and the adapters' observe run last.
 
 The build (`client/vite.config.ts`) sets `build.target: 'es2022'` and has no top-level-await
 transform (`vite-plugin-top-level-await` is the one it leaves out). `vite-plugin-wasm` resolves the
@@ -1025,8 +1027,8 @@ and suites such as `frame.test.ts` load the real sheet without the resize seam.
 
 **One frame owner.** `appInitOptions` sets `autoStart: false`, so Pixi's own render ticker stays
 stopped; `WorldRenderer.render` draws once at the end of each frame-loop frame, and
-`WorldRenderer.resize` draws because a resize clears the canvas. The renderer sets
-`renderer.limits.maxBatchableTextures` to `MAX_BATCH_TEXTURES` (4, `render/config.ts`) after init
+`WorldRenderer.resize` draws because a resize clears the canvas. The renderer caps
+`renderer.limits.maxBatchableTextures` at `MAX_BATCH_TEXTURES` (4, `render/config.ts`) after init
 and after every WebGL context restore. On a restore it also re-bakes the terrain chunk textures and
 drops the generated placeholder character textures (`AssetProvider.contextRestored`). The
 flat-terrain fallback's large `Graphics` uses a separate Pixi shader built at the device limit,
@@ -1183,7 +1185,8 @@ confirmed Clear plan row.
 (Deploying → the deploy panel, Active → the tactical shell, Finished → the results panel, no row →
 `none`). `renderableBattle` is the one predicate `reconcileStack` and `refreshBattle` share. The
 three roots share the `battleView` record in `OVERLAY_A11Y`, the adopted live region and the focus
-trap; the e2e suites select `[data-testid="battle-title"]` and `aria-modal` on that one id.
+trap; the e2e suites find the battle by `[data-testid="battle-title"]` and the shown root's
+`aria-modal`.
 `activeBattleView`, `tacticalOwnsStart` and `battleHint` read the shown view, never the phase.
 
 **Feedback channels.** `ui/feedbackPolicy.ts` assigns each `MessageKind` its channel, in a table
@@ -1191,8 +1194,8 @@ that `satisfies Record<MessageKind, PolicyRow>`. The world line is `#status`; th
 `.mr-toast` region (`ui/toast.ts`), announced once through `#a11y-live` (the notice pump) and hidden
 after `TOAST_MS` of the frame clock. `sendGuarded` names a kind per send site
 (`SEND_REJECT_KIND`); `main.ts`'s care, shop and rename outcomes name a kind. The menu strip's hint
-order is the wireframes' WF1-A9. The policy test pins the list of action-required toast kinds and
-the on-screen state each names. The strip has zero layout height: its height and negative bottom
+order is the wireframes' WF1-A9. The policy test pins the list of action-required toast kinds, and
+each of them names an on-screen state that also carries it. The strip has zero layout height: its height and negative bottom
 margin cancel, it sits in a 2rem bottom reserve on `.mr-frame` and `.mr-shell`, and it is sticky
 with `bottom: -2rem`, because Chromium measures sticky offsets inside the scroller's padding. Only
 the main menu's strip shows a persistent hint; on any other frame it is on `#status`.
