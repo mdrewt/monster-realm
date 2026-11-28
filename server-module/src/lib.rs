@@ -1,7 +1,7 @@
 //! monster-realm server module (`spacetimedb` crate 2.16.1, lockstep with the 2.16.1 host).
 //!
 //! The authoritative imperative shell: tables hold the world's truth; reducers are
-//! the only writers, beside the three account-check procedures of `account_checks.rs`,
+//! the only writers, beside the four account-check procedures of `account_checks.rs`,
 //! which write that module's tables and the host's allowlist. Reducers are THIN — validate `ctx.sender()` + legality, delegate
 //! the rule to `game-core` (the SSOT `apply_move`), write tables; reject with `Err`,
 //! never clamp. Movement is **server-paced and per-zone**: clients

@@ -223,9 +223,6 @@ pub(crate) fn erase_last_position(ctx: &ReducerContext, owner: Identity) {
 #[spacetimedb::reducer]
 pub fn join_game(ctx: &ReducerContext, name: String) -> Result<(), String> {
     crate::access::require_admitted(ctx, "join_game")?;
-    // Ownership: an enforcing build lets only an entitled caller join. It reads the caller's
-    // token and, when the token does not entitle it, the caller's checked account.
-    crate::accounts::require_entitled(ctx, &crate::accounts::BUILD_PROFILE, "join_game")?;
     // Deletion gate: before every other table read and every write.
     crate::guards::require_not_deleting(ctx, "join_game")?;
     // A caller whose character plays under another identity checks its account in first.

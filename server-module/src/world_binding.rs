@@ -21,11 +21,11 @@
 //! ([`delist_account_of`]).
 //!
 //! A player erases what the world holds about its account with [`unbind_world_account`], the
-//! one client-callable reducer the access rule does not gate, and the owner erases a named
-//! identity's with [`drop_world_binding`]: the `world_account` row with its armed re-check, and
-//! the attestation binding with its nonce. Erasing a `world_account` row withdraws that
-//! identity's admission row too, so it never lets in an identity whose handle the owner
-//! removed.
+//! one client-callable reducer the access rule does not gate (it makes no ownership check
+//! either), and the owner erases a named identity's with [`drop_world_binding`]: the
+//! `world_account` row with its armed re-check, and the attestation binding with its nonce.
+//! Erasing a `world_account` row withdraws that identity's admission row too, so it never lets
+//! in an identity whose handle the owner removed.
 //!
 //! The attestation binding grants nothing: no rule reads it. [`bind_identity`] still checks a
 //! world attestation (a compact JWT the account service signs at `POST /attest`, naming this
@@ -599,8 +599,9 @@ pub fn bind_world_account_for(
 ///
 /// The one client-callable reducer the access rule does not gate, so an identity the rule
 /// refuses (one whose handle the owner took off the list included) can still erase its link,
-/// over a connection the connect reducer let in. A caller whose account is pending deletion is
-/// refused by the deletion gate.
+/// over a connection the connect reducer let in. It makes no ownership check either: a caller
+/// who is not entitled erases its link like any other. A caller whose account is pending
+/// deletion is refused by the deletion gate.
 ///
 /// Once its `world_account` row is gone, the identity gets back into a world that is not
 /// `Open` only by the owner: the door, the admission list of `access::set_world_access`, a

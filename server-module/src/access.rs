@@ -15,14 +15,27 @@
 //! The connect reducer refuses anyone the rule does not admit
 //! ([`require_admitted_at_connect`]), which holds that identity off every table and every
 //! reducer, and every reducer of the generated client roster that is not owner-only makes the
-//! same check ([`require_admitted`]) before it reads or writes anything else, because the host
-//! checks a connection only when it opens. The one exception is
-//! `world_binding::unbind_world_account`, which makes no admission check, so an identity the
-//! rule refuses can still erase its own account row over a connection already open. The binding
-//! reducers of `world_binding.rs` answer their build's refusal first, which reads nothing. The
-//! reducers that exist only in a dev build (`dev_reducers`, `load_test_zones`) are outside that
-//! roster and make no check. The procedure `account_checks::check_account` makes the check
-//! before it sends anything and again before it stores the answer.
+//! same check before it reads or writes anything else, because the host checks a connection
+//! only when it opens. The one exception is `world_binding::unbind_world_account`, which makes
+//! no admission check, so an identity the rule refuses can still erase its own account row over
+//! a connection already open. The binding reducers of `world_binding.rs` answer their build's
+//! refusal first, which reads nothing. The reducers that exist only in a dev build
+//! (`dev_reducers`, `load_test_zones`) are outside that roster and make no check. The procedure
+//! `account_checks::check_account` makes the check before it sends anything and again before it
+//! stores the answer.
+//!
+//! On a build that enforces ownership, a reducer a player plays through also refuses a caller
+//! who is not entitled (`accounts::entitled`), in the same statement: [`require_admitted`] is
+//! the access rule and then that check. Every reducer of the generated client roster opens with
+//! it except the five an account reaches whatever it owns (`delete_account`,
+//! `cancel_account_deletion`, `request_data_export`, `start_guest_claim` and
+//! `complete_guest_claim`), which open with [`require_rule_admits`], the access rule alone; the
+//! owner-only reducers, which make their owner check; and `unbind_world_account`, which makes
+//! no check. The connect reducer and the account-check procedures ask nothing about ownership:
+//! an identity becomes entitled by connecting and checking its account in. The check reads what
+//! is stored when the call runs, the connection's token and the caller's `world_account` row,
+//! so an identity that has joined is refused from the first call that finds it not entitled. A
+//! build that does not enforce ownership passes every admitted caller and reads neither.
 //!
 //! An identity that is not admitted can call nothing but that unbind, so admission is granted
 //! by calls only the owner can make: [`set_world_access`] sets the rule and admits identities
@@ -38,8 +51,9 @@
 //! `world_admission_attempt` rows (an identity's, when it is admitted or erased); an unbind and
 //! the owner's drop delete an admission row through [`withdraw_admission`]. It reads `config`
 //! for the owner, reads an identity's handle through `crate::account_checks`, reads the host's
-//! list and adds to it through `crate::world_binding`, and, when the rule changes, reads the
-//! live sessions through `crate::live_session_identities`.
+//! list and adds to it through `crate::world_binding`, asks `crate::accounts` whether a caller
+//! is entitled, and, when the rule changes, reads the live sessions through
+//! `crate::live_session_identities`.
 
 use crate::guards::log_reject;
 use crate::marshal::now_ms;
@@ -114,22 +128,34 @@ pub(crate) fn is_admitted(ctx: &ReducerContext, identity: Identity) -> bool {
     }
 }
 
-/// The admission check of a client-callable reducer: its first statement, so an identity the
-/// rule does not admit is refused before anything is read or written on its behalf.
+/// The gate of a reducer a player plays through: the access rule, then ownership under this
+/// build's profile. It runs before the reducer reads or writes anything on the caller's behalf
+/// (the two player binding reducers of `world_binding.rs` answer their build's refusal before
+/// it). [`require_rule_admits`], [`require_admitted_at_connect`] and [`is_admitted`] are the
+/// access rule alone.
 pub(crate) fn require_admitted(ctx: &ReducerContext, reducer: &str) -> Result<(), String> {
     require_admitted_under(ctx, &crate::accounts::BUILD_PROFILE, reducer)
 }
 
-/// [`require_admitted`] with the build's profile an argument. The profile is not read.
+/// [`require_admitted`] under `profile`. An identity the rule does not admit gets
+/// [`REJECT_NOT_ADMITTED`] and nothing of ownership is read. An admitted one is then asked for
+/// ownership (`accounts::require_entitled`): a profile that does not enforce it passes everyone
+/// and reads neither the token nor a row; an enforcing one refuses a caller who is not entitled
+/// with `accounts::ERR_OWNERSHIP_REQUIRED`. No caller is exempt, the world's owner and the
+/// database identity included. Writes nothing.
 fn require_admitted_under(
     ctx: &ReducerContext,
-    _profile: &crate::accounts::BuildProfile,
+    profile: &crate::accounts::BuildProfile,
     reducer: &str,
 ) -> Result<(), String> {
-    require_rule_admits(ctx, reducer)
+    require_rule_admits(ctx, reducer)?;
+    crate::accounts::require_entitled(ctx, profile, reducer)
 }
 
-/// Refuses an identity the access rule does not admit with [`REJECT_NOT_ADMITTED`].
+/// The access rule alone: refuses an identity the rule does not admit with
+/// [`REJECT_NOT_ADMITTED`] and asks nothing about ownership, on every build. The first
+/// statement of the five reducers an account reaches whatever it owns: its deletion and the
+/// cancel, its export, and the two halves of a guest claim.
 pub(crate) fn require_rule_admits(ctx: &ReducerContext, reducer: &str) -> Result<(), String> {
     if is_admitted(ctx, ctx.sender()) {
         return Ok(());
