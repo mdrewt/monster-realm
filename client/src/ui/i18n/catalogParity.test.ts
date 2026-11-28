@@ -823,6 +823,8 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       // D-pad and the generic button name (`pad.*`).
       'input/padGlyphs.ts',
       'main.ts',
+      // The world notices' owner: the request line resolves its challenge and trade lines.
+      'shell/notices.ts',
       // The server link's owner: the guarded send resolves its disconnected line.
       'shell/session.ts',
       // bt-10 (named intentional change, BT10.6): the tactical client's ONE resolver importer; every
@@ -876,6 +878,8 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
     if (feedback === undefined) throw new Error('shell/feedback.ts missing from the census walk');
     const session = census.find((f) => f.file === 'shell/session.ts');
     if (session === undefined) throw new Error('shell/session.ts missing from the census walk');
+    const notices = census.find((f) => f.file === 'shell/notices.ts');
+    if (notices === undefined) throw new Error('shell/notices.ts missing from the census walk');
     // Each `t` binding is pinned on its own file: main.ts imports the resolver's `t` ALIASED to
     // `i18nT` (with `tf`), and shell/feedback.ts imports a11yCopy's `t` BARE. A scanner keyed on
     // the literal name `t` alone would miss the aliased binding, or read main.ts's `i18nT` calls as
@@ -934,6 +938,8 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
     // private target whose host notice is still due).
     // `chrome.status.disconnected` is not in this list: the guarded send that resolves it is
     // shell/session.ts's, pinned on that file below.
+    // `notice.request.{challenge,trade,trades}` are not in this list: the request line that resolves
+    // them is shell/notices.ts's, pinned on that file below.
     expect(Array.from(i18nLiteralKeys).sort(), 'main.ts i18n-bound literal keys').toEqual([
       'chrome.chip.ok', // ctl-13: the A chip's verb when A would open a picker
       'chrome.rename.updated',
@@ -963,9 +969,6 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       'interact.verb.trade', // ctl-10b: the faced player's Trade row
       'kit.sheet.close', // uif-12: the world sheets' Close row (UIF12.2)
       'menu.disabled.inBattle', // ctl-6c: the dispatch refusal line (CTL6C.3)
-      'notice.request.challenge', // ctl-13: the banner / sheet heading for a challenge
-      'notice.request.trade', // ctl-13: the banner / sheet heading for a trade
-      'notice.request.trades', // ts-3: n >= 2 trade requests collapsed into one banner line
       'notice.sheet.accept', // ctl-13: the request sheet's rows
       'notice.sheet.decline',
       'notice.sheet.view',
@@ -1039,22 +1042,42 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       session.calls.filter((c) => c.module === 'a11y'),
       'shell/session.ts makes no a11y-bound call',
     ).toEqual([]);
-    // The union of the literal keys the three files resolve, per binding, is a fixed list written
+    // shell/notices.ts resolves the request line's three keys through the i18n resolver's `tf`, and
+    // nothing through a11yCopy. Compared as a sorted set of (kind, binding, key).
+    expect(
+      Array.from(
+        new Set(
+          notices.calls
+            .filter((c) => c.module === 'i18n')
+            .map((c) => `${c.kind} ${c.orig} ${String(c.literal)}`),
+        ),
+      ).sort(),
+      'shell/notices.ts resolves exactly the request line keys, as literal keys',
+    ).toEqual([
+      'literal tf notice.request.challenge',
+      'literal tf notice.request.trade',
+      'literal tf notice.request.trades',
+    ]);
+    expect(
+      notices.calls.filter((c) => c.module === 'a11y'),
+      'shell/notices.ts makes no a11y-bound call',
+    ).toEqual([]);
+    // The union of the literal keys the four files resolve, per binding, is a fixed list written
     // out here (never computed from one of the files): main.ts's i18n list above plus
-    // shell/session.ts's keys, and `a11y.world.region`, whichever of the three files resolves a key. A
-    // key that leaves main.ts for one of the shell modules keeps the union; a key that is dropped
-    // on the way shrinks it.
+    // shell/session.ts's and shell/notices.ts's keys, and `a11y.world.region`, whichever of the
+    // four files resolves a key. A key that leaves main.ts for one of the shell modules keeps the
+    // union; a key that is dropped on the way shrinks it.
     const unionOfLiteralKeys = (module: 'i18n' | 'a11y'): string[] =>
       Array.from(
         new Set(
-          [...main.calls, ...feedback.calls, ...session.calls]
+          [...main.calls, ...feedback.calls, ...session.calls, ...notices.calls]
             .filter((c) => c.module === module && c.kind === 'literal' && c.literal !== undefined)
             .map((c) => c.literal as string),
         ),
       ).sort();
     expect(
       unionOfLiteralKeys('i18n'),
-      'the i18n keys main.ts, shell/feedback.ts and shell/session.ts resolve together',
+      'the i18n keys main.ts, shell/feedback.ts, shell/session.ts and shell/notices.ts resolve together',
     ).toEqual([
       // Named intentional change:+ the 19 keys shell/session.ts's world gate resolves
       // (7 `claim.gate.*`, 12 `world.gate.*`).
@@ -1123,7 +1146,7 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
     ]);
     expect(
       unionOfLiteralKeys('a11y'),
-      'the a11y keys main.ts, shell/feedback.ts and shell/session.ts resolve together',
+      'the a11y keys main.ts, shell/feedback.ts, shell/session.ts and shell/notices.ts resolve together',
     ).toEqual(['a11y.world.region']);
 
     // I18N-27 over the LIVE tree: every resolver-bound call's first argument is a literal.
