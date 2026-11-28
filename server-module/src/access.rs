@@ -26,16 +26,17 @@
 //!
 //! On a build that enforces ownership, a reducer a player plays through also refuses a caller
 //! who is not entitled (`accounts::entitled`), in the same statement: [`require_admitted`] is
-//! the access rule and then that check. Every reducer of the generated client roster opens with
-//! it except the five an account reaches whatever it owns (`delete_account`,
-//! `cancel_account_deletion`, `request_data_export`, `start_guest_claim` and
-//! `complete_guest_claim`), which open with [`require_rule_admits`], the access rule alone; the
-//! owner-only reducers, which make their owner check; and `unbind_world_account`, which makes
-//! neither check. The connect reducer and the account-check procedures ask nothing about
-//! ownership: where a world checks accounts itself, an identity becomes entitled by connecting
-//! and checking its account in. The check reads what is stored when the call runs, the
-//! connection's token and the caller's `world_account` row, so an identity that has joined is
-//! refused from the first call that finds it not entitled.
+//! the access rule and then that check. Every reducer of the generated client roster calls it
+//! (the two player binding reducers after their build's refusal) except the five an account
+//! reaches whatever it owns (`delete_account`, `cancel_account_deletion`,
+//! `request_data_export`, `start_guest_claim` and `complete_guest_claim`), which open with
+//! [`require_rule_admits`], the access rule alone; the owner-only reducers, which make their
+//! owner check; and `unbind_world_account`, which makes neither check. The connect reducer and
+//! the account-check procedures ask nothing about ownership: where a world checks accounts
+//! itself, an identity becomes entitled by connecting and checking its account in. The check
+//! reads what is stored when the call runs, the connection's token and the caller's
+//! `world_account` row, so an identity that has joined is refused from the first call that
+//! finds it not entitled.
 //!
 //! An identity that is not admitted can call nothing but that unbind, so admission is granted
 //! by calls only the owner can make: [`set_world_access`] sets the rule and admits identities

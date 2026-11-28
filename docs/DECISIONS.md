@@ -3111,9 +3111,10 @@ issuer that takes another app id or the publisher key, asks Steam's ownership ch
 Steam player by default as it does a dev account. Known
 limits, accepted: a host can patch the module on its own server to switch the rule off, and a
 player refunded after a world checked its account keeps playing there until that world's next
-check of the account is answered: a world asks again only when the identity next connects, 10
-minutes or more after it last asked (see "A private world checks an account itself: a one-use
-ticket at first contact, then the account's handle"), so a connection held open is not asked again,
+check of the account is answered: a world asks about a player other than its host again only when
+the identity next connects, 10 minutes or more after it last asked (see "A private world checks an
+account itself: a one-use ticket at first contact, then the account's handle"), so a connection
+held open is not asked again,
 and from the call after a negative answer is stored every gated reducer refuses the identity. On
 the official server a connection that outlives its token keeps playing until it reconnects (see
 "Ownership is enforced unless a dev feature switches it off").
@@ -3163,10 +3164,10 @@ read by a small scanner over the token's raw payload, since the module has no JS
 (`token_names_entitlement`): exactly one top-level `mr_ent`, an array holding the string; a
 duplicate key, an escaped key or text the scanner cannot follow fails closed.
 
-The 51 reducers of the generated client roster split four ways. 37 are gated, `join_game` and the
-five that need no `player` row (`care`, `train`, `evolve`, `set_nickname`, `set_party_slot`) among
-them; the two player binding reducers answer their build's refusal (`this server takes no world
-binding`) before the gate. 5 are the account's own and open with `access::require_rule_admits`, the
+The 51 reducers of the generated client roster split four ways. 37 are gated, `join_game` among
+them and reducers that need no `player` row, such as `care`, `train`, `evolve`, `set_nickname` and
+`set_party_slot`; the two player binding reducers answer their build's refusal (`this server takes
+no world binding`) before the gate. 5 are the account's own and open with `access::require_rule_admits`, the
 access rule alone: `delete_account`, `cancel_account_deletion`, `request_data_export`,
 `start_guest_claim` and `complete_guest_claim`. 8 are owner-only and make their owner check and no
 ownership check (named in "A world that is not open refuses an unadmitted identity at connect and
@@ -3212,9 +3213,10 @@ monster-realm-module/dev_issuers`) and `acs6_open` runs it on a test build; by
 of the generated bindings in exactly one of the four kinds above, so a reducer added later is gated
 or the test fails, and on the dev-enforcing build runs every gated reducer as an admitted caller
 who is not entitled; by `mod ownership_gate` in `server-module/src/access_tests.rs`, the gate over
-constructed profiles, enforcing and not; by the `acs6_enforcing_*` modules beside each exempt
-reducer's own tests, which run it on the dev-enforcing build as a caller who is not entitled; by
-`justfile.test.mjs`;
+constructed profiles, enforcing and not; by the `acs6_enforcing_*` modules of
+`world_binding_tests.rs`, `accounts_tests.rs`, `privacy_tests.rs`, `content_tests.rs` and
+`access_tests.rs`, which run each exempt reducer on the dev-enforcing build as a caller who is not
+entitled; by `justfile.test.mjs`;
 and by `evals/account-e2e.eval.mjs`, which on a live host publishes a dev-enforcing build
 (anonymous and unentitled tokens refused, an entitled one joins) and the `official` artefact `just
 release-module` built (anonymous and a dev-issuer token refused, no `account` row).
