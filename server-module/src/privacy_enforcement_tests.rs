@@ -3723,6 +3723,149 @@ mod admission_roster {
             );
             assert_eq!(everything(&fx, &w, &o), before, "neither call writes");
         }
+
+        /// Every `log` record of this test PROCESS. NEXTEST-ONLY: one logger may be installed
+        /// per process, so plain `cargo test` (one process for every test) fails all but the
+        /// first installer.
+        struct RosterLogSink(std::sync::Mutex<Vec<String>>);
+
+        impl log::Log for RosterLogSink {
+            fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+                true
+            }
+            fn log(&self, record: &log::Record<'_>) {
+                self.0
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(record.args().to_string());
+            }
+            fn flush(&self) {}
+        }
+
+        static ROSTER_LOGS: RosterLogSink = RosterLogSink(std::sync::Mutex::new(Vec::new()));
+
+        /// The captured lines whose `evt` is `reject`.
+        fn roster_reject_lines() -> Vec<String> {
+            ROSTER_LOGS
+                .0
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .filter(|line| line.contains(r#""evt":"reject""#))
+                .cloned()
+                .collect()
+        }
+
+        fn clear_roster_logs() {
+            ROSTER_LOGS
+                .0
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clear();
+        }
+
+        /// The reject line for `reducer`, `who` and `reason`.
+        fn roster_reject_line(reducer: &str, who: Identity, reason: &str) -> String {
+            format!(
+                r#"{{"evt":"reject","reducer":"{reducer}","sender":"{who}","reason":"{reason}"}}"#
+            )
+        }
+
+        /// Every gated reducer, called by `who` over `jwt`, answers the ownership error and logs
+        /// exactly one reject line: under its own roster name, for `who`, with the ownership
+        /// reason.
+        fn assert_every_gated_reducer_logs_its_refusal_once(
+            fx: &Fixture,
+            who: Identity,
+            jwt: Option<&str>,
+            case: &str,
+        ) {
+            assert!(
+                !fx.run_as_conn_at(who, CONN, jwt, at(T0), |ctx| entitled(ctx, &BUILD_PROFILE)),
+                "{case}: fixture: the caller is not entitled on this build"
+            );
+            assert_eq!(
+                fx.run_as_conn_at(who, CONN, jwt, at(T0), |ctx| {
+                    crate::access::require_rule_admits(ctx, "fixture")
+                }),
+                Ok(()),
+                "{case}: fixture: the access rule admits the caller"
+            );
+            let mut checked = 0usize;
+            for (name, _, call) in probes() {
+                if ownership_of(name) != Ownership::Gated {
+                    continue;
+                }
+                checked += 1;
+                clear_roster_logs();
+                let got = catch_unwind(AssertUnwindSafe(|| run_as(fx, who, jwt, call)))
+                    .unwrap_or_else(|_| Err(format!("`{name}` aborted the host")));
+                assert_eq!(
+                    got,
+                    Err(ERR_OWNERSHIP_REQUIRED.to_string()),
+                    "`{name}` called by {case} must answer the ownership refusal"
+                );
+                assert_eq!(
+                    roster_reject_lines(),
+                    vec![roster_reject_line(name, who, ERR_OWNERSHIP_REQUIRED)],
+                    "`{name}` called by {case}: exactly one reject line, under `{name}`"
+                );
+            }
+            assert_eq!(
+                checked, 37,
+                "{case}: thirty-seven gated reducers are checked"
+            );
+        }
+
+        /// Each shipped gated reducer logs its ownership refusal exactly once, under its own
+        /// name, for an admitted caller with no token and no row on an `Open` world and for a
+        /// joined caller whose row says not entitled over a trusted issuer's claimless token.
+        ///
+        /// kills: a gated reducer that hands the gate another reducer's name; a gated reducer
+        /// whose ownership refusal is not logged or is logged twice.
+        #[test]
+        fn every_gated_reducer_logs_its_ownership_refusal_once_under_its_own_name() {
+            log::set_logger(&ROSTER_LOGS)
+                .expect("no logger installed in this test process (nextest)");
+            log::set_max_level(log::LevelFilter::Info);
+
+            // i. an admitted caller with no token and no row on an Open world.
+            {
+                let fx = fixture();
+                let _w = world_with(&fx, &rule_row(WorldAccessRule::Open));
+                let _o = owned(&fx);
+                assert_every_gated_reducer_logs_its_refusal_once(
+                    &fx,
+                    caller(),
+                    None,
+                    "a caller with no token and no row on an Open world",
+                );
+            }
+
+            // ii. a joined caller whose row says not entitled, over a claimless trusted token.
+            {
+                let fx = fixture();
+                let _w = password_world(&fx);
+                let o = owned(&fx);
+                o.players.seed(&Player {
+                    identity: admitted(),
+                    entity_id: 1,
+                    name: "Ada".to_string(),
+                    online: true,
+                    discriminator: 1,
+                    lead_level: 0,
+                });
+                o.accounts.seed(&account_row(admitted(), HANDLE, false));
+                o.accounts.seed(&account_row(owner(), OWNER_HANDLE, true));
+                let claimless = dev_token(false);
+                assert_every_gated_reducer_logs_its_refusal_once(
+                    &fx,
+                    admitted(),
+                    Some(claimless.as_str()),
+                    "a joined caller whose row says not entitled and whose token lacks the claim",
+                );
+            }
+        }
     }
 }
 
