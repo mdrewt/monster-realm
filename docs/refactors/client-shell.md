@@ -225,7 +225,7 @@ listed, and a read a pump receives through its parameter object is a read by `ma
 | `controlsView` | `views.ts` | `screens`, `input` | `main()` boot: mount |
 | `controlsSavedLine` | `views.ts` | `screens` | `main()` boot: mount |
 | `sessionView` | `views.ts` | `account` | `main()` boot: mount |
-| `evolutionNoticeBanner` | `views.ts` | `screens`, `main` | `main()` boot: mount |
+| `evolutionNoticeBanner` | `views.ts` | `notices`, `screens`, `main` | `main()` boot: mount |
 | `errorOverlayView` | `views.ts` | `feedback`, `notices`, `input` | `main()` boot: mount |
 | `hintBarView` | `views.ts` | `main` | `main()` boot: mount |
 | `evolutionNoticeOk` | `views.ts` | `interact` | `main()` boot: mount |
@@ -276,11 +276,11 @@ The movement latches are written where the event happens and read only by `snaps
 | Collection | Owner | Mutated from outside the owner by |
 |---|---|---|
 | `navHeldCodes` | `inputState.ts` | nothing: `noteNavHeld`, `releaseNavHeld` and `releaseAllInput` are its writers |
-| `dismissedRequests` | `notices.ts` | `worldPort`, the batch listener that follows the trade sessions, `onReady`, `onReconnect` |
-| `announcedRequests` | `notices.ts` | the batch listener that announces a new request, the one that follows the trade sessions, `onReady`, `onReconnect` |
-| `answeredRequests` | `notices.ts` | `dispatch`, the batch listener that follows the trade sessions, `onReady`, `onReconnect` |
+| `dismissedRequests` | `notices.ts` | nothing: `dismissRequest`, `forgetClosedSession` and `forgetRequests` are its writers |
+| `announcedRequests` | `notices.ts` | nothing: `markAnnounced`, `forgetClosedSession` and `forgetRequests` are its writers |
+| `answeredRequests` | `notices.ts` | nothing: `markAnswered`, `releaseAnswered`, `forgetClosedSession` and `forgetRequests` are its writers |
 | `careInFlight` | `commands.ts` | `onReconnect` |
-| `openedTradeSessions` | `notices.ts` | `openTradeEditor`, `resetTradeSessionState`, the batch listener that follows the trade sessions |
+| `openedTradeSessions` | `notices.ts` | nothing: `markSessionOpened`, `forgetOpenedSessions` and `forgetClosedSession` are its writers |
 | `zoneWarpsById` | `movement.ts` | nothing: `zoneWarps` is its one writer |
 | `frameOpens` | `frames.ts` | nothing: `openFrame` is its one writer |
 | `tacticsMapFacts` | `battleFrame.ts` | nothing: `mapFactsOf` is its one writer |
@@ -293,8 +293,6 @@ function takes over.
 
 | Owner | Proposed function | Takes over |
 |---|---|---|
-| `notices.ts` | `markAnswered`, `dismissRequest`, `markAnnounced`, `clearNoticeSets` | every mutation of the three request sets |
-| `notices.ts` | `markSessionOpened`, `forgetOpenedSessions` | every mutation of `openedTradeSessions` |
 | `battleFrame.ts` | `installBattlePort` | the battle port |
 | `battleFrame.ts` | `mountBattleFrame` | the `battleMount` assignment at boot |
 | `battleFrame.ts` | `resetBattleFrame` | the battle and tactics lines of `resetPredictionState`, in their position |
