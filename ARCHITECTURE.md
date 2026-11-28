@@ -1207,10 +1207,14 @@ closes, on a join and on a reconnect. `main.ts` reads the motion preference in t
 and hands the tactical shell a getter of it.
 
 A lower shell module reaches upward through a port `main.ts` installs, or through the parameter
-object of a frame-loop pump. Two ports are installed: the world hint's host (`installHintHost`,
-`shell/feedback.ts`) and the Gamepad API's fault sink (`installPadFaultSink`,
-`shell/inputState.ts`), which logs to the console until installed. The port for what the battle
-views need from `dispatch` and the stack is planned in `docs/refactors/client-shell.md`. Every
+object of a frame-loop pump. Three ports are installed: the world hint's host (`installHintHost`,
+`shell/feedback.ts`), the Gamepad API's fault sink (`installPadFaultSink`, `shell/inputState.ts`),
+which logs to the console until installed, and the command port (`installCommandPort`,
+`shell/commandPort.ts`), which holds `dispatch` and `applyStack` for the callers the module map puts
+below the dispatcher: the battle views' handlers, `popOverBattleBeforeSwitch`, `closeTradeEditor`,
+`runInteract`, `applyMenuStep` and `showSignInGate` call them through `commandPort`. That module
+imports types only and registers nothing. The battle frame's own port, for the stack as it reads
+it and the outcome edge, is planned in `docs/refactors/client-shell.md`. Every
 `client/src/main.*.test.ts` suite resets the module registry and imports `./main`. Of the batch
 listeners `main.ts` registers, `reconcileStack` runs ahead of every listener that shows the battle
 or the dialogue, and the stack sync and the adapters' observe run last.
