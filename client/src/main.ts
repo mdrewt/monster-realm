@@ -83,6 +83,7 @@ import {
   NOOP_TELEMETRY,
   startClientTelemetry,
 } from './observability/telemetry';
+import { openExternal, saveFile } from './platform/handoff';
 import { reissueDir } from './prediction/heldKeys';
 import { OwedInputs } from './prediction/owedInputs';
 import { type ApplyMove, boundSeq, Predictor } from './prediction/predictor';
@@ -1108,34 +1109,22 @@ function downloadExportBundle(): void {
   // state, but a truncated personal-data file must be unreachable by ANY route, not merely by
   // the one the UI offers.
   if (exportAssembly?.status !== 'complete' || artifact === undefined) return;
-  // Both declared BEFORE the `try` so the `finally` can release exactly what was actually
-  // created. `URL.createObjectURL` is itself one of the calls a CSP/sandbox policy blocks, so it
-  // has to be INSIDE the try — the F9 precedent's shape, where only the anchor work is guarded,
-  // lets that throw escape a click listener in the middle of a privacy interaction.
-  let url = '';
-  let anchor: HTMLAnchorElement | undefined;
-  try {
-    url = URL.createObjectURL(new Blob([artifact], { type: 'application/json' }));
-    anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = exportBundleFilename(exportAssembly.requestId, Date.now());
-    document.body.appendChild(anchor);
-    anchor.click();
-  } catch {
-    // A3-D7: a STATIC string, deliberately unlike the F9 bug-bundle fallback this is otherwise
-    // modelled on. That one logs its payload, which is safe only because the bug bundle is a
-    // no-PII allowlist by construction; the artifact here is the player's entire personal-data
-    // export, and logging it would retain it in the devtools buffer for the page's life and —
-    // through reportError — put it on screen and into the ring the F9 bundle embeds.
-    console.error('[data-export] download blocked');
-    reportError('download-blocked', i18nT('chrome.status.exportBlocked'));
-  } finally {
-    // A3-D8: in a `finally`, not inside the `try` after `click()` as the F9 precedent has it —
-    // a throw there would pin the object URL, and with it the whole export Blob, for the page's
-    // lifetime, and leave a stray anchor in the document.
-    anchor?.remove();
-    if (url !== '') URL.revokeObjectURL(url);
-  }
+  saveFile(
+    {
+      name: exportBundleFilename(exportAssembly.requestId, Date.now()),
+      mimeType: 'application/json',
+      text: artifact,
+    },
+    () => {
+      // A static string, unlike the bug bundle's fallback, which logs its payload: that is safe
+      // only because the bug bundle is a no-PII allowlist by construction. The artifact here is
+      // the player's entire personal-data export, and logging it would retain it in the devtools
+      // buffer for the page's life and, through reportError, put it on screen and into the ring
+      // the F9 bundle embeds.
+      console.error('[data-export] download blocked');
+      reportError('download-blocked', i18nT('chrome.status.exportBlocked'));
+    },
+  );
 }
 
 function applyPrivacy(event: PrivacyEvent): void {
@@ -1789,7 +1778,7 @@ function applyMenuStep(step: MainMenuStep, tab?: AccelPath['tab']): void {
       else void dispatch({ kind: 'claimSignIn' });
       break;
     case 'store':
-      window.open(OWNERSHIP_STORE_URL, '_blank', 'noopener');
+      openExternal(OWNERSHIP_STORE_URL);
       break;
   }
   renderMenu();

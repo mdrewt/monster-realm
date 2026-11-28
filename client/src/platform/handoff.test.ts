@@ -237,12 +237,6 @@ describe('saveFile on a host that blocks the download', () => {
     expect(log.revoked).toEqual(['blob:handoff-test-0']);
   });
 
-  // Positive control for the fault above: the spy refuses only anchors.
-  it('creates non-anchor elements normally under the anchor-creation fault', () => {
-    installHost({ createElement: true });
-    expect(document.createElement('div').tagName).toBe('DIV');
-  });
-
   it('calls onBlocked once, leaves no anchor and revokes the URL when appendChild throws', () => {
     const log = installHost({ append: true });
     const onBlocked = recordingBlocked(log);
