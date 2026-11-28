@@ -4990,6 +4990,221 @@ mod nh {
         }
     }
 
+    /// The movement intake on a dev-enforcing build: a joined player whose checked account
+    /// says it does not own the game is refused every move with the ownership error and
+    /// nothing is written; the same player with a row that says it owns the game moves.
+    #[cfg(all(feature = "dev_issuers", not(feature = "open_join")))]
+    mod acs6_enforcing_moves {
+        use super::{a, at, bystander, character, world, World, T0};
+        use crate::account_checks::WorldAccount;
+        use crate::accounts::{entitled, BUILD_PROFILE, DEV_LOGIN_ISSUERS, ERR_OWNERSHIP_REQUIRED};
+        use crate::movement::{clear_queue, enqueue_move, set_move};
+        use crate::native_host_tests::{fixture, Fixture, Handle};
+        use game_core::{ActionState, Direction, MoveInput};
+        use spacetimedb::sats::bsatn::to_vec;
+        use spacetimedb::{Identity, ReducerContext};
+
+        /// The joined player's entity.
+        const ENTITY: u64 = 1;
+
+        /// Every table the joined world registers.
+        const TABLES: [&str; 10] = [
+            "player",
+            "character",
+            "move_intent",
+            "battle",
+            "monster",
+            "monster_pub",
+            "trade_offer",
+            "movement_tick_schedule",
+            "species_row",
+            "world_account",
+        ];
+
+        fn conn_of(who: Identity) -> u128 {
+            0xAC36_0000 + u128::from(who.to_byte_array()[0])
+        }
+
+        /// A dev-issuer token addressed to the game that names no entitlement.
+        fn unclaimed_token() -> String {
+            format!(
+                r#"{{"iss":"{}","sub":"s","aud":"monster-realm","iat":1,"exp":2}}"#,
+                DEV_LOGIN_ISSUERS[0]
+            )
+        }
+
+        fn account(who: Identity, handle: &str, entitled: bool) -> WorldAccount {
+            WorldAccount {
+                handle: handle.to_string(),
+                identity: who,
+                entitled,
+                checked_at_ms: T0 - 5_000,
+                is_host: false,
+            }
+        }
+
+        /// The queue the joined player's intent and character hold.
+        fn queued() -> Vec<MoveInput> {
+            vec![MoveInput::Step(Direction::East)]
+        }
+
+        struct Joined<'a> {
+            w: World<'a>,
+            accounts: Handle<'a, WorldAccount>,
+        }
+
+        /// The movement world where [`a`] has joined (its `player`, its `character` and its
+        /// `move_intent`, one step queued at seq 0) and holds a `world_account` row that says
+        /// `entitled`; an idle bystander has joined beside it with a row that says entitled.
+        /// `world_account` is read-only: a write to it aborts the test.
+        fn joined_world(fx: &Fixture, entitled: bool) -> Joined<'_> {
+            let w = world(fx);
+            let accounts = fx
+                .table::<WorldAccount>("world_account", "identity", |r| r.identity)
+                .unique();
+            w.join(a(), ENTITY, character(ENTITY, queued(), ActionState::Idle));
+            w.bystander(0);
+            accounts.seed(&account(a(), "k1.joined-player", entitled));
+            accounts.seed(&account(bystander(), "k1.bystander", true));
+            Joined { w, accounts }
+        }
+
+        /// `f` as [`a`] over a client connection carrying [`unclaimed_token`].
+        fn as_player<T>(fx: &Fixture, f: impl FnOnce(&ReducerContext) -> T) -> T {
+            let jwt = unclaimed_token();
+            fx.run_as_conn_at(a(), conn_of(a()), Some(&jwt), at(T0), f)
+        }
+
+        /// Every row of every registered table.
+        fn snapshot(j: &Joined<'_>) -> Vec<Vec<u8>> {
+            let mut all = j.w.snapshot();
+            all.push(to_vec(&j.w.battles.rows()).expect("rows encode"));
+            all.push(to_vec(&j.w.pubs.rows()).expect("rows encode"));
+            all.push(to_vec(&j.w.offers.rows()).expect("rows encode"));
+            all.push(to_vec(&j.w.ticks.rows()).expect("rows encode"));
+            all.push(to_vec(&j.accounts.rows()).expect("rows encode"));
+            all
+        }
+
+        /// `act`, called by the joined player whose row says not entitled, answers exactly the
+        /// ownership error; its character, its intent and its queue are as they were, and no
+        /// table changed or took a write call.
+        fn assert_refused(label: &str, act: impl FnOnce(&ReducerContext) -> Result<(), String>) {
+            let fx = fixture();
+            let j = joined_world(&fx, false);
+            assert_eq!(
+                as_player(&fx, |ctx| crate::access::require_rule_admits(ctx, "probe")),
+                Ok(()),
+                "fixture: the rule admits the player"
+            );
+            assert!(
+                !as_player(&fx, |ctx| entitled(ctx, &BUILD_PROFILE)),
+                "fixture: the player is not entitled"
+            );
+            let character_before =
+                to_vec(&j.w.character(ENTITY)).expect("the character row encodes");
+            let before = snapshot(&j);
+            fx.reset_writes();
+            assert_eq!(
+                as_player(&fx, act),
+                Err(ERR_OWNERSHIP_REQUIRED.to_string()),
+                "{label}"
+            );
+            assert_eq!(
+                to_vec(&j.w.character(ENTITY)).expect("the character row encodes"),
+                character_before,
+                "{label}: its character as it was"
+            );
+            assert_eq!(
+                j.w.intent(ENTITY),
+                (queued(), 0),
+                "{label}: its intent's queue and seq as they were"
+            );
+            assert_eq!(
+                j.w.published(ENTITY),
+                (queued(), 0),
+                "{label}: its published queue as it was"
+            );
+            assert_eq!(snapshot(&j), before, "{label}: every table as it was");
+            for t in TABLES {
+                assert_eq!(fx.writes_to(t), 0, "{label}: {t} took a write call");
+            }
+        }
+
+        /// `act`, called by the same player with a row that says entitled, answers `Ok` and
+        /// leaves its intent at `want`; the character row is not written.
+        fn assert_moves(
+            label: &str,
+            act: impl FnOnce(&ReducerContext) -> Result<(), String>,
+            want: (Vec<MoveInput>, u64),
+        ) {
+            let fx = fixture();
+            let j = joined_world(&fx, true);
+            assert!(
+                as_player(&fx, |ctx| entitled(ctx, &BUILD_PROFILE)),
+                "fixture: the row entitles the player"
+            );
+            let character_before =
+                to_vec(&j.w.character(ENTITY)).expect("the character row encodes");
+            assert_eq!(as_player(&fx, act), Ok(()), "{label}");
+            assert_eq!(j.w.intent(ENTITY), want, "{label}: the intent");
+            assert_eq!(
+                to_vec(&j.w.character(ENTITY)).expect("the character row encodes"),
+                character_before,
+                "{label}: the character row as it was"
+            );
+        }
+
+        /// kills: `enqueue_move` with no ownership check; the check reading the bystander's
+        /// row; the check made after the intent is written.
+        #[test]
+        fn a_joined_player_whose_row_says_not_entitled_is_refused_enqueue_move_lpw36_1() {
+            assert_refused("enqueue_move", |ctx| enqueue_move(ctx, MoveInput::Jump, 1));
+        }
+
+        /// kills: `set_move` with no ownership check; the check made after the intent is
+        /// written.
+        #[test]
+        fn a_joined_player_whose_row_says_not_entitled_is_refused_set_move_lpw36_1() {
+            assert_refused("set_move", |ctx| {
+                set_move(ctx, MoveInput::Step(Direction::North), 1)
+            });
+        }
+
+        /// kills: `clear_queue` with no ownership check; the check made after the intent is
+        /// written.
+        #[test]
+        fn a_joined_player_whose_row_says_not_entitled_is_refused_clear_queue_lpw36_1() {
+            assert_refused("clear_queue", |ctx| clear_queue(ctx, 1));
+        }
+
+        /// kills: a gate that refuses every caller; a gate blind to the `world_account` row.
+        #[test]
+        fn a_joined_player_whose_row_says_entitled_enqueues_a_move_lpw36_1() {
+            assert_moves(
+                "enqueue_move",
+                |ctx| enqueue_move(ctx, MoveInput::Jump, 1),
+                (vec![MoveInput::Step(Direction::East), MoveInput::Jump], 1),
+            );
+        }
+
+        /// kills: a gate that refuses every caller; a gate blind to the `world_account` row.
+        #[test]
+        fn a_joined_player_whose_row_says_entitled_sets_a_move_lpw36_1() {
+            assert_moves(
+                "set_move",
+                |ctx| set_move(ctx, MoveInput::Step(Direction::North), 1),
+                (vec![MoveInput::Step(Direction::North)], 1),
+            );
+        }
+
+        /// kills: a gate that refuses every caller; a gate blind to the `world_account` row.
+        #[test]
+        fn a_joined_player_whose_row_says_entitled_clears_its_queue_lpw36_1() {
+            assert_moves("clear_queue", |ctx| clear_queue(ctx, 1), (vec![], 1));
+        }
+    }
+
     /// The real `join_game` on a test build (`open_join` named): anyone joins,
     /// whatever token the connection carries.
     #[cfg(feature = "open_join")]

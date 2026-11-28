@@ -14400,6 +14400,213 @@ mod acct_nh {
             );
         }
     }
+
+    // --- the account's own reducers on the dev-enforcing build ----------------------
+
+    /// On the dev-enforcing build a caller who does not own the game still deletes its
+    /// account, cancels the deletion, starts a guest claim and completes one, each writing
+    /// exactly what it writes for a caller who owns the game.
+    #[cfg(all(feature = "dev_issuers", not(feature = "open_join")))]
+    mod acs6_enforcing_account_reducers {
+        use super::*;
+
+        /// A token from the build's first dev issuer, addressed to this application, that
+        /// names no entitlement: a signed-in account that does not own the game.
+        fn unclaimed_jwt() -> String {
+            format!(
+                r#"{{"iss":"{}","sub":"s","aud":"monster-realm","iat":1,"exp":2}}"#,
+                crate::accounts::DEV_LOGIN_ISSUERS[0]
+            )
+        }
+
+        /// Whether `who`, over the connection and token its reducer call uses, is entitled
+        /// under the shipped profile.
+        fn is_entitled(fx: &Fixture, who: Identity, jwt: Option<&str>, ms: i64) -> bool {
+            as_conn(fx, who, jwt, ms, |ctx| {
+                crate::accounts::entitled(ctx, &crate::accounts::BUILD_PROFILE)
+            })
+        }
+
+        /// kills: the ownership check in the account reducers' gate (the account holder who
+        /// does not own the game is refused its own deletion).
+        #[test]
+        fn delete_account_by_a_caller_who_does_not_own_the_game_stamps_pending_and_arms_the_reaper_lpw36_2(
+        ) {
+            let fx = fixture();
+            let w = world(&fx);
+            let me = id(0xE1);
+            let jwt = unclaimed_jwt();
+            let active = crate::accounts::new_account_row(me, "i".to_string(), 1);
+            w.account.seed(&active);
+            assert!(
+                !is_entitled(&fx, me, Some(&jwt), T0),
+                "fixture: the caller is not entitled on this build"
+            );
+            fx.reset_writes();
+
+            assert_eq!(
+                as_conn(&fx, me, Some(&jwt), T0, crate::accounts::delete_account),
+                Ok(())
+            );
+            assert_eq!(
+                encs(&w.account.rows()),
+                encs(&[crate::accounts::requested_deletion(active, T0)]),
+                "the account turns PendingDeletion at the call's instant"
+            );
+            let armed = del_reapers_of(&w, me);
+            assert_eq!(armed.len(), 1, "the deletion reaper is armed once");
+            assert_eq!(
+                fire_at(&armed[0].scheduled_at),
+                at(crate::accounts::deletion_fire_at_ms(T0)),
+                "the reaper fires at the grace end of the stamp"
+            );
+            assert_eq!(fx.writes_to("account"), 1);
+            assert_eq!(fx.writes_to("account_deletion_reaper_schedule"), 1);
+        }
+
+        /// kills: the ownership check in the account reducers' gate (the account holder who
+        /// does not own the game cannot take its deletion back).
+        #[test]
+        fn cancel_account_deletion_by_a_caller_who_does_not_own_the_game_restores_active_lpw36_2() {
+            let fx = fixture();
+            let w = world(&fx);
+            let me = id(0xE2);
+            let jwt = unclaimed_jwt();
+            let active = crate::accounts::new_account_row(me, "i".to_string(), 1);
+            w.account.seed(&crate::accounts::requested_deletion(
+                active.clone(),
+                T0 - 10,
+            ));
+            w.del_reaper.seed(&AccountDeletionReaperSchedule {
+                scheduled_id: 700,
+                scheduled_at: ScheduleAt::Time(at(crate::accounts::deletion_fire_at_ms(T0 - 10))),
+                account_identity: me,
+            });
+            assert!(
+                !is_entitled(&fx, me, Some(&jwt), T0),
+                "fixture: the caller is not entitled on this build"
+            );
+            fx.reset_writes();
+
+            assert_eq!(
+                as_conn(
+                    &fx,
+                    me,
+                    Some(&jwt),
+                    T0,
+                    crate::accounts::cancel_account_deletion
+                ),
+                Ok(())
+            );
+            assert_eq!(
+                encs(&w.account.rows()),
+                encs(&[active]),
+                "the account is Active again"
+            );
+            assert!(
+                del_reapers_of(&w, me).is_empty(),
+                "the deletion reaper is disarmed"
+            );
+            assert_eq!(fx.writes_to("account"), 1);
+            assert_eq!(fx.writes_to("account_deletion_reaper_schedule"), 1);
+        }
+
+        /// kills: the ownership check in the account reducers' gate (a guest who does not own
+        /// the game cannot start the claim that carries its progress into an account).
+        #[test]
+        fn start_guest_claim_by_a_guest_who_does_not_own_the_game_writes_the_claim_and_arms_its_reaper_lpw36_2(
+        ) {
+            let fx = fixture();
+            let w = world(&fx);
+            let g = id(0xE3);
+            let claim_code = code('3');
+            w.player.seed(&player_row(g, 1, "Guesty"));
+            assert!(
+                !is_entitled(&fx, g, None, T0),
+                "fixture: the guest is not entitled on this build"
+            );
+            fx.reset_writes();
+
+            assert_eq!(
+                as_conn(&fx, g, None, T0, |ctx| {
+                    crate::accounts::start_guest_claim(ctx, claim_code.clone())
+                }),
+                Ok(())
+            );
+            let expected =
+                crate::accounts::claim_row(g, claim_code.clone(), "Guesty".to_string(), T0);
+            let expires_at_ms = expected.expires_at_ms;
+            assert_eq!(
+                encs(&w.claim.rows()),
+                encs(&[expected]),
+                "the claim row names the guest, its code and its player name"
+            );
+            let reapers = w.claim_reaper.rows();
+            assert_eq!(reapers.len(), 1, "the claim's reaper is armed once");
+            assert_eq!(reapers[0].guest_identity, g);
+            assert_eq!(
+                fire_at(&reapers[0].scheduled_at),
+                at(expires_at_ms),
+                "the reaper fires when the claim expires"
+            );
+            assert_eq!(fx.writes_to("guest_claim_reaper_schedule"), 1);
+        }
+
+        /// kills: the ownership check in the account reducers' gate (an account that does not
+        /// own the game cannot take in a guest's progress).
+        #[test]
+        fn complete_guest_claim_by_an_account_that_does_not_own_the_game_completes_the_claim_lpw36_2(
+        ) {
+            let fx = fixture();
+            let w = world(&fx);
+            let (g, c) = (id(0xE4), id(0xE5));
+            let claim_code = code('4');
+            let claim = crate::accounts::claim_row(g, claim_code.clone(), "Guesty".to_string(), T0);
+            w.claim_reaper.seed(&GuestClaimReaperSchedule {
+                scheduled_id: 710,
+                scheduled_at: ScheduleAt::Time(at(claim.expires_at_ms)),
+                guest_identity: g,
+            });
+            w.claim.seed(&claim);
+            seed_rekey_rows(&w, g, 1);
+            let active = crate::accounts::new_account_row(c, "i".to_string(), 1);
+            w.account.seed(&active);
+            let jwt = unclaimed_jwt();
+            let done = T0 + 1_000;
+            assert!(
+                !is_entitled(&fx, c, Some(&jwt), done),
+                "fixture: the account is not entitled on this build"
+            );
+
+            assert_eq!(
+                as_conn(&fx, c, Some(&jwt), done, |ctx| {
+                    crate::accounts::complete_guest_claim(ctx, claim_code.clone())
+                }),
+                Ok(())
+            );
+            assert_eq!(
+                encs(&w.account.rows()),
+                encs(&[crate::accounts::claimed_account(active, g, done)]),
+                "the account carries the claim's provenance"
+            );
+            let owners: Vec<(u64, Identity)> = w
+                .monster
+                .rows()
+                .into_iter()
+                .map(|m| (m.monster_id, m.owner_identity))
+                .collect();
+            assert_eq!(
+                owners,
+                vec![(101, c)],
+                "the guest's monster moves to the account"
+            );
+            assert!(w.claim.rows().is_empty(), "the code is spent");
+            assert!(
+                w.claim_reaper.rows().is_empty(),
+                "the claim's reaper is disarmed"
+            );
+        }
+    }
 }
 
 // ===========================================================================

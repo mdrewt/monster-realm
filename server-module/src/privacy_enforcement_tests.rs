@@ -2598,15 +2598,21 @@ fn host_check_schedule_is_private_and_no_view_returns_its_row_lpw43_2() {
 }
 
 // ---------------------------------------------------------------------------
-// The admission roster (local-play design A1): every client-callable reducer makes the
-// admission check before anything else, except the owner-only reducers, which answer
-// their own owner refusal, and `unbind_world_account`, which the rule does not gate, so a
-// player the host refuses can still erase their own binding. The roster is the GENERATED
-// client bindings (their file names); each probe runs the SHIPPED reducer fn as an unadmitted
-// non-owner over a client connection on a `Password` world. Only `config`, `world_access` and
-// `world_admission` are registered, so a reducer that writes before it refuses aborts the test
-// in the host. Dev-only reducers (`dev_reducers`, `load_test_zones`) are not in the generated
-// bindings and get no probe.
+// The admission roster (local-play design A1) and the ownership roster. Every client-callable
+// reducer makes the admission check before anything else, except the owner-only reducers, which
+// answer their own owner refusal, and `unbind_world_account`, which the rule does not gate, so a
+// player the host refuses can still erase their own binding. Of the reducers that make the
+// admission check, the gated ones make the ownership check right after it, in the one gate
+// (`access::require_admitted`); the account's own five (its deletion and the cancel of it, its
+// data export, and the two halves of a guest claim) make the admission check alone
+// (`access::require_rule_admits`), so an account that is not entitled still reaches them. The
+// owner-only reducers and `unbind_world_account` make no ownership check. The roster is the
+// GENERATED client bindings (their file names); each probe runs the SHIPPED reducer fn over a
+// client connection: the admission sweep as an unadmitted non-owner on a `Password` world, the
+// ownership sweep (on the dev-enforcing build) as an admitted caller that is not entitled. Only
+// the tables the gate reads are registered, none of them writable, so a reducer that writes
+// before it refuses aborts the test in the host. Dev-only reducers (`dev_reducers`,
+// `load_test_zones`) are not in the generated bindings and get no probe.
 // ---------------------------------------------------------------------------
 
 mod admission_roster {
@@ -3181,6 +3187,540 @@ mod admission_roster {
             before,
             "the ungated reducer writes nothing for a caller with no binding"
         );
+    }
+
+    // --- The ownership roster ------------------------------------------------------------
+
+    /// Which check a client-callable reducer makes about what its caller owns.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Ownership {
+        /// The gate: the admission check, then the ownership check.
+        Gated,
+        /// The admission check alone: a reducer an account reaches whatever it owns.
+        AccountsOwn,
+        /// Its owner check alone.
+        OwnerOnly,
+        /// No check.
+        Ungated,
+    }
+
+    /// The account's own reducers: its deletion and the cancel of it, its data export, and the
+    /// two halves of a guest claim.
+    const ACCOUNTS_OWN: [&str; 5] = [
+        "cancel_account_deletion",
+        "complete_guest_claim",
+        "delete_account",
+        "request_data_export",
+        "start_guest_claim",
+    ];
+
+    const OWNER_ONLY: [&str; 8] = [
+        "bind_world_account_for",
+        "drop_world_binding",
+        "request_bind_nonce_for",
+        "set_host_identity",
+        "set_world_access",
+        "set_world_allowlist",
+        "set_world_names",
+        "sync_content",
+    ];
+
+    const UNGATED: [&str; 1] = ["unbind_world_account"];
+
+    /// The gated set, pinned by name.
+    const GATED: [&str; 37] = [
+        "accept_challenge",
+        "ack_evolution_notices",
+        "advance_dialogue",
+        "bind_world_account",
+        "buy",
+        "cancel_challenge",
+        "cancel_queue",
+        "cancel_trade",
+        "cancel_trade_session",
+        "care",
+        "challenge_pvp",
+        "clear_queue",
+        "confirm_trade",
+        "confirm_trade_session",
+        "consume_crystalized_essence",
+        "decline_challenge",
+        "deploy_units",
+        "dismiss_dialogue",
+        "enqueue_move",
+        "essence_train",
+        "evolve",
+        "forfeit",
+        "heal_party",
+        "join_game",
+        "open_trade_session",
+        "propose_trade",
+        "request_bind_nonce",
+        "respond_trade",
+        "sell",
+        "set_move",
+        "set_nickname",
+        "set_party_slot",
+        "set_profile_name",
+        "set_trade_offer",
+        "submit_queue",
+        "talk",
+        "train",
+    ];
+
+    /// A reducer no exempt pin names is gated.
+    fn ownership_of(name: &str) -> Ownership {
+        if ACCOUNTS_OWN.contains(&name) {
+            Ownership::AccountsOwn
+        } else if OWNER_ONLY.contains(&name) {
+            Ownership::OwnerOnly
+        } else if UNGATED.contains(&name) {
+            Ownership::Ungated
+        } else {
+            Ownership::Gated
+        }
+    }
+
+    fn names(xs: &[&str]) -> BTreeSet<String> {
+        xs.iter().map(|x| (*x).to_string()).collect()
+    }
+
+    /// Every reducer of the generated bindings is in exactly one of the four ownership kinds:
+    /// the account's own five, the owner-only eight and `unbind_world_account` by name, and the
+    /// gated set the rest, thirty-seven, each pinned by name. Each reducer's ownership kind agrees
+    /// with its admission probe's kind.
+    ///
+    /// kills: a reducer added to the bindings outside the gated set with no pin naming it; an
+    /// exempt pin naming a reducer the bindings lack; a gated or account reducer that makes no
+    /// admission check; an owner-only or ungated reducer counted as gated.
+    #[test]
+    fn every_generated_reducer_is_in_one_ownership_kind_and_every_unpinned_one_is_gated_lpw36_1() {
+        let generated = generated_reducers();
+        let kinds: Vec<(&'static str, Kind)> = probes()
+            .into_iter()
+            .map(|(name, kind, _)| (name, kind))
+            .collect();
+        for name in &generated {
+            let kind = kinds
+                .iter()
+                .find(|(probed, _)| *probed == name.as_str())
+                .map(|(_, kind)| *kind)
+                .unwrap_or_else(|| panic!("`{name}` has no admission probe"));
+            let own = ownership_of(name);
+            let agrees = match own {
+                Ownership::Gated | Ownership::AccountsOwn => matches!(kind, Kind::Player),
+                Ownership::OwnerOnly => matches!(kind, Kind::OwnerOnly),
+                Ownership::Ungated => matches!(kind, Kind::Ungated),
+            };
+            assert!(
+                agrees,
+                "`{name}` is {own:?} for ownership and {kind:?} for admission"
+            );
+        }
+        let of = |want: Ownership| -> BTreeSet<String> {
+            generated
+                .iter()
+                .filter(|name| ownership_of(name) == want)
+                .cloned()
+                .collect()
+        };
+        assert_eq!(
+            of(Ownership::AccountsOwn),
+            names(&ACCOUNTS_OWN),
+            "the account's own five"
+        );
+        assert_eq!(
+            of(Ownership::OwnerOnly),
+            names(&OWNER_ONLY),
+            "the owner-only eight"
+        );
+        assert_eq!(
+            of(Ownership::Ungated),
+            names(&UNGATED),
+            "the one ungated reducer"
+        );
+        let gated = of(Ownership::Gated);
+        assert_eq!(
+            gated,
+            names(&GATED),
+            "the gated set is every generated reducer no exempt pin names"
+        );
+        assert_eq!(gated.len(), 37, "thirty-seven gated reducers");
+        assert_eq!(
+            ACCOUNTS_OWN.len() + OWNER_ONLY.len() + UNGATED.len() + gated.len(),
+            generated.len(),
+            "each generated reducer is in exactly one kind"
+        );
+    }
+
+    /// The shipped reducers on the dev-enforcing build: every gated reducer refuses an admitted
+    /// caller that is not entitled with the ownership error, after the admission check and before
+    /// anything else.
+    #[cfg(all(feature = "dev_issuers", not(feature = "open_join")))]
+    mod acs6_enforcing_gate {
+        use super::*;
+        use crate::account_checks::WorldAccount;
+        use crate::accounts::{
+            entitled, ALLOWED_AUDIENCE, BUILD_PROFILE, DEV_LOGIN_ISSUERS, ENTITLEMENT_BASE_GAME,
+            ERR_OWNERSHIP_REQUIRED,
+        };
+        use crate::schema::Player;
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+
+        /// The index the ownership check reads a caller's `world_account` row through.
+        const OWNERSHIP_INDEX: &str = "world_account_identity_idx_btree";
+        const CONN: u128 = 0x0AD3_3601;
+        const HANDLE: &str = "k1.gate-3d3d3d3d";
+        const OWNER_HANDLE: &str = "k1.owner-a1a1a1a1";
+
+        fn rule_row(rule: WorldAccessRule) -> WorldAccess {
+            WorldAccess { id: 0, rule }
+        }
+
+        /// A token from the first dev login issuer for this application; it names the base game
+        /// when `claim`.
+        fn dev_token(claim: bool) -> String {
+            let ent = if claim {
+                format!(r#","mr_ent":["{ENTITLEMENT_BASE_GAME}"]"#)
+            } else {
+                String::new()
+            };
+            format!(
+                r#"{{"iss":"{}","sub":"s","aud":"{}"{ent},"iat":1,"exp":2}}"#,
+                DEV_LOGIN_ISSUERS[0], ALLOWED_AUDIENCE[0]
+            )
+        }
+
+        /// The token the host mints for a connection that brought none.
+        fn host_minted() -> String {
+            r#"{"iss":"localhost","sub":"host-sub","aud":["spacetimedb"],"iat":1}"#.to_string()
+        }
+
+        fn account_row(who: Identity, handle: &str, is_entitled: bool) -> WorldAccount {
+            WorldAccount {
+                handle: handle.to_string(),
+                identity: who,
+                entitled: is_entitled,
+                checked_at_ms: T0 - 1_000,
+                is_host: false,
+            }
+        }
+
+        /// The tables beside [`World`]'s that an ownership check may read: `world_account` and
+        /// `player`, each by `identity`. Neither is writable or scannable.
+        struct Owned<'a> {
+            accounts: Handle<'a, WorldAccount>,
+            players: Handle<'a, Player>,
+        }
+
+        fn owned(fx: &Fixture) -> Owned<'_> {
+            Owned {
+                accounts: fx.table::<WorldAccount>("world_account", "identity", |r| r.identity),
+                players: fx.table::<Player>("player", "identity", |r| r.identity),
+            }
+        }
+
+        /// Every stored row of the five registered tables, and their write counts.
+        fn everything(
+            fx: &Fixture,
+            w: &World<'_>,
+            o: &Owned<'_>,
+        ) -> Vec<(&'static str, Vec<Vec<u8>>, u32)> {
+            let mut out = footprint(fx, w);
+            out.push((
+                "world_account",
+                o.accounts.rows().iter().map(enc).collect(),
+                fx.writes_to("world_account"),
+            ));
+            out.push((
+                "player",
+                o.players.rows().iter().map(enc).collect(),
+                fx.writes_to("player"),
+            ));
+            out
+        }
+
+        fn run_as(
+            fx: &Fixture,
+            who: Identity,
+            jwt: Option<&str>,
+            call: Call,
+        ) -> Result<(), String> {
+            fx.run_as_conn_at(who, CONN, jwt, at(T0), call)
+        }
+
+        /// Every gated reducer, called by `who` over `jwt`, answers exactly the ownership error,
+        /// in roster order, naming the reducer that does not; no registered table changes or
+        /// takes a write; and the host's index-request log holds nothing beyond the entry point's
+        /// own names, the admission check's and [`OWNERSHIP_INDEX`].
+        fn assert_every_gated_reducer_refuses(
+            fx: &Fixture,
+            w: &World<'_>,
+            o: &Owned<'_>,
+            who: Identity,
+            jwt: Option<&str>,
+            case: &str,
+        ) {
+            assert_eq!(
+                run_as(fx, who, jwt, |_| Ok(())),
+                Ok(()),
+                "{case}: the entry point runs"
+            );
+            let mut allowed: BTreeSet<String> = fx.requested_indexes().into_iter().collect();
+            for index in ADMISSION_CHECK_INDEXES {
+                allowed.insert(index.to_string());
+            }
+            allowed.insert(OWNERSHIP_INDEX.to_string());
+            assert!(
+                !fx.run_as_conn_at(who, CONN, jwt, at(T0), |ctx| entitled(ctx, &BUILD_PROFILE)),
+                "{case}: fixture: the caller is not entitled on this build"
+            );
+            assert_eq!(
+                fx.run_as_conn_at(who, CONN, jwt, at(T0), |ctx| {
+                    crate::access::require_rule_admits(ctx, "fixture")
+                }),
+                Ok(()),
+                "{case}: fixture: the access rule admits the caller"
+            );
+            fx.reset_writes();
+            let before = everything(fx, w, o);
+            let mut checked = 0usize;
+            for (name, _, call) in probes() {
+                if ownership_of(name) != Ownership::Gated {
+                    continue;
+                }
+                checked += 1;
+                let got = catch_unwind(AssertUnwindSafe(|| run_as(fx, who, jwt, call)))
+                    .unwrap_or_else(|_| Err(format!("`{name}` aborted the host")));
+                assert_eq!(
+                    got,
+                    Err(ERR_OWNERSHIP_REQUIRED.to_string()),
+                    "`{name}` called by {case} must answer the ownership refusal"
+                );
+                let foreign: Vec<String> = fx
+                    .requested_indexes()
+                    .into_iter()
+                    .filter(|index| !allowed.contains(index))
+                    .collect();
+                assert!(
+                    foreign.is_empty(),
+                    "`{name}` asked this host for {foreign:?} before refusing {case}"
+                );
+                assert_eq!(
+                    everything(fx, w, o),
+                    before,
+                    "`{name}` refusing {case} writes nothing"
+                );
+            }
+            assert_eq!(
+                checked, 37,
+                "{case}: thirty-seven gated reducers are probed"
+            );
+        }
+
+        /// kills: a gated reducer that makes no ownership check (it runs on, answers its own
+        /// error or aborts the host); the ownership check kept in `join_game` alone.
+        #[test]
+        fn every_gated_reducer_refuses_an_admitted_caller_with_no_token_and_no_row_on_an_open_world_lpw36_1(
+        ) {
+            let fx = fixture();
+            let w = world_with(&fx, &rule_row(WorldAccessRule::Open));
+            let o = owned(&fx);
+            assert_every_gated_reducer_refuses(
+                &fx,
+                &w,
+                &o,
+                caller(),
+                None,
+                "a caller with no token and no row on an Open world",
+            );
+        }
+
+        /// kills: a gated reducer that makes no ownership check; an admission row read as an
+        /// entitlement.
+        #[test]
+        fn every_gated_reducer_refuses_an_admitted_caller_with_no_token_and_no_row_on_a_password_world_lpw36_1(
+        ) {
+            let fx = fixture();
+            let w = password_world(&fx);
+            let o = owned(&fx);
+            assert_every_gated_reducer_refuses(
+                &fx,
+                &w,
+                &o,
+                admitted(),
+                None,
+                "an admitted caller with no token and no row on a Password world",
+            );
+        }
+
+        /// kills: the host-minted token read as an entitlement.
+        #[test]
+        fn every_gated_reducer_refuses_an_admitted_caller_with_the_host_minted_token_lpw36_1() {
+            let fx = fixture();
+            let w = password_world(&fx);
+            let o = owned(&fx);
+            let host = host_minted();
+            assert_every_gated_reducer_refuses(
+                &fx,
+                &w,
+                &o,
+                admitted(),
+                Some(host.as_str()),
+                "an admitted caller with the host-minted token",
+            );
+        }
+
+        /// A caller that has joined (it holds a `player` row) whose `world_account` row says
+        /// `entitled: false` and whose token, from a trusted issuer, lacks the claim; the owner's
+        /// row beside it says entitled.
+        ///
+        /// kills: a `player` row read as an entitlement; a trusted issuer read as one; the row of
+        /// another identity read for the caller; a gate that asks only callers with no row.
+        #[test]
+        fn every_gated_reducer_refuses_a_joined_caller_whose_row_says_not_entitled_lpw36_1() {
+            let fx = fixture();
+            let w = password_world(&fx);
+            let o = owned(&fx);
+            o.players.seed(&Player {
+                identity: admitted(),
+                entity_id: 1,
+                name: "Ada".to_string(),
+                online: true,
+                discriminator: 1,
+                lead_level: 0,
+            });
+            o.accounts.seed(&account_row(admitted(), HANDLE, false));
+            o.accounts.seed(&account_row(owner(), OWNER_HANDLE, true));
+            let claimless = dev_token(false);
+            assert_every_gated_reducer_refuses(
+                &fx,
+                &w,
+                &o,
+                admitted(),
+                Some(claimless.as_str()),
+                "a joined caller whose row says not entitled and whose token lacks the claim",
+            );
+        }
+
+        /// The world's owner, not entitled, on a `Password` world: the rule admits it with no
+        /// admission row, and the ownership check asks it like anyone.
+        ///
+        /// kills: the owner exempted from the ownership check.
+        #[test]
+        fn every_gated_reducer_refuses_the_world_owner_who_is_not_entitled_lpw36_1() {
+            let fx = fixture();
+            let w = password_world(&fx);
+            let o = owned(&fx);
+            assert!(
+                w.admission.rows().iter().all(|r| r.identity != owner()),
+                "fixture: the owner holds no admission row"
+            );
+            assert_every_gated_reducer_refuses(
+                &fx,
+                &w,
+                &o,
+                owner(),
+                None,
+                "the world's owner, not entitled, on a Password world",
+            );
+        }
+
+        /// The admission sweep on the dev-enforcing build: every reducer that makes the admission
+        /// check answers its refusal to an unadmitted caller first, with no index asked for beyond
+        /// the admission check's, so no ownership read comes before it.
+        ///
+        /// kills: the ownership check placed before the admission check.
+        #[test]
+        fn every_player_reducer_answers_the_admission_refusal_before_any_ownership_read_lpw36_1() {
+            let fx = fixture();
+            let w = password_world(&fx);
+            assert_every_player_reducer_refuses_first(
+                &fx,
+                &w,
+                "a Password world on the dev-enforcing build",
+            );
+            assert!(
+                !fx.run_as_conn_at(caller(), 0x0AD3_1700, None, at(T0), |ctx| {
+                    entitled(ctx, &BUILD_PROFILE)
+                }),
+                "fixture: the unadmitted caller is not entitled either"
+            );
+        }
+
+        /// The shipped gate passes a caller entitled by its `world_account` row alone (no
+        /// token), and refuses the same caller with nothing written once the row says
+        /// `entitled: false`.
+        ///
+        /// kills: a gate that never asks about ownership; one blind to the stored row.
+        #[test]
+        fn the_shipped_gate_passes_a_caller_entitled_by_its_row_alone_and_refuses_it_when_the_row_says_not_lpw36_1(
+        ) {
+            let fx = fixture();
+            let w = password_world(&fx);
+            let o = owned(&fx);
+            let gate = |who: Identity| {
+                fx.run_as_conn_at(who, CONN, None, at(T0), |ctx| {
+                    crate::access::require_admitted(ctx, "care")
+                })
+            };
+            o.accounts.seed(&account_row(admitted(), HANDLE, true));
+            fx.reset_writes();
+            let before = everything(&fx, &w, &o);
+            assert_eq!(
+                gate(admitted()),
+                Ok(()),
+                "a row that says entitled, no token"
+            );
+            assert_eq!(everything(&fx, &w, &o), before, "passing writes nothing");
+            assert_eq!(o.accounts.remove(admitted()), 1, "fixture: the row goes");
+            o.accounts.seed(&account_row(admitted(), HANDLE, false));
+            let before = everything(&fx, &w, &o);
+            assert_eq!(
+                gate(admitted()),
+                Err(ERR_OWNERSHIP_REQUIRED.to_string()),
+                "the same row saying not entitled"
+            );
+            assert_eq!(
+                everything(&fx, &w, &o),
+                before,
+                "the refusal writes nothing"
+            );
+        }
+
+        /// The shipped gate passes a caller entitled by its token alone (no row), and refuses the
+        /// same caller with nothing written over a token from the same issuer without the claim.
+        ///
+        /// kills: a gate that never asks about ownership; one blind to the token; the claim not
+        /// read.
+        #[test]
+        fn the_shipped_gate_passes_a_caller_entitled_by_its_token_alone_and_refuses_a_token_without_the_claim_lpw36_1(
+        ) {
+            let fx = fixture();
+            let w = password_world(&fx);
+            let o = owned(&fx);
+            o.accounts.seed(&account_row(owner(), OWNER_HANDLE, true));
+            let gate = |jwt: &str| {
+                fx.run_as_conn_at(admitted(), CONN, Some(jwt), at(T0), |ctx| {
+                    crate::access::require_admitted(ctx, "care")
+                })
+            };
+            let entitling = dev_token(true);
+            let claimless = dev_token(false);
+            fx.reset_writes();
+            let before = everything(&fx, &w, &o);
+            assert_eq!(
+                gate(entitling.as_str()),
+                Ok(()),
+                "an entitling token, no row"
+            );
+            assert_eq!(
+                gate(claimless.as_str()),
+                Err(ERR_OWNERSHIP_REQUIRED.to_string()),
+                "the same issuer's token without the claim"
+            );
+            assert_eq!(everything(&fx, &w, &o), before, "neither call writes");
+        }
     }
 }
 
