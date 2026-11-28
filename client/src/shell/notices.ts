@@ -1,9 +1,10 @@
 // shell/notices — the trade and challenge requests waiting on this client: the request keys the
 // player dismissed, those already announced and those answered, the sessions whose editor this
 // client opened, the notice input built from them and the store, the requests still waiting on an
-// answer and the line a request reads. Only this module changes the four sets: every other module calls its owner functions, and
-// reads the announced and answered keys through read-only views. Module scope builds the four empty
-// sets and nothing else: it registers nothing, writes nothing to the document and resolves no string.
+// answer and the line a request reads. Only this module changes the four sets: every other module
+// calls its owner functions, and reads the announced and answered keys through read-only views.
+// Module scope builds the four empty sets and nothing else: it registers nothing, writes nothing to
+// the document and resolves no string.
 import { tf } from '../ui/i18n/resolver';
 import { type NoticeInput, pendingRequests, type RequestNotice } from '../ui/noticeModel';
 import { identity, store } from './session';
