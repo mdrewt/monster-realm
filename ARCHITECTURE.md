@@ -1157,8 +1157,9 @@ download in `main.ts`. `shell/config.ts` holds the values fixed for the session,
 set at import: the connection target (`URI`, `DB`, `TARGET_KIND`, resolved from the shell
 document on the page global; a production build throws at import when the document is missing
 or refused), the dev-log level and its send and fate
-loggers, the zone id, the game-core constants read from the wasm exports, and the wasm-ready
-mark. It writes nothing to the document and registers nothing. `shell/views.ts` owns the handles
+loggers, the sign-in constants (`OPERATED_BY_US`, `OIDC_ISSUER`, `SIGN_IN_MODE`,
+`ACCOUNT_REQUIRED`, resolved from `TARGET_KIND` and the build's `VITE_MR_OIDC_ISSUER`), the
+zone id, the game-core constants read from the wasm exports, and the wasm-ready mark. It writes nothing to the document and registers nothing. `shell/views.ts` owns the handles
 of the views built at boot (the screens, the Profile sections, the session overlay, the
 evolution notice banner, the error overlay and the hint bar) and the Controls saved-line
 function mounted with Controls. `main()` constructs each view with its handlers and mounts it
@@ -1334,7 +1335,7 @@ PKCE, `net/oidc.ts`) against the issuer in `VITE_MR_OIDC_ISSUER`. `main.ts` hand
 The Profile screen's Account section offers Sign In only when `connect` received an
 issuer, labelled with the build's `VITE_MR_OIDC_PROVIDER_NAME` (the issuer when the
 build names none); `signInOffer` in `ui/claimModel.ts` decides it from that one value.
-`main.ts` reads `VITE_MR_OIDC_ISSUER` in one module-scope assignment (`OIDC_ISSUER`), and every kind
+`shell/config.ts` reads `VITE_MR_OIDC_ISSUER` in one module-scope assignment (`OIDC_ISSUER`), and every kind
 but `official` and `test` holds the empty string; `VITE_MR_OIDC_CLIENT_ID` also reaches the
 world-ticket client, which only a `local` or `private` target builds. `connect` gets `signIn:
 'oidc'` only when that issuer is non-empty, `'off'` otherwise; with `'off'` it builds no OIDC client

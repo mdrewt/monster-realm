@@ -46,8 +46,9 @@ owns it.
 | `client/src/shell/config.ts` | module scope (`URI`, `DB`, `TARGET_KIND`) | `globalThis` handed to `readShellDocument`; `import.meta.env` (`DEV`) | shell document |
 | `client/src/net/shellDocument.ts` | `readShellDocument`, `renderShellConfigScript` | the own property `__MR_SHELL_CONFIG__` of the injected host; the script text writes `globalThis` | shell document |
 | `client/src/shell/config.ts` | `DEV_LOG_LEVEL` | `import.meta.env` (`VITE_MR_DEVLOG`, `DEV`) | build configuration |
+| `client/src/shell/config.ts` | `OIDC_ISSUER` | `import.meta.env` (`VITE_MR_OIDC_ISSUER`) | build configuration |
 | `client/src/net/buildInfo.ts` | `BUILD_INFO` | `import.meta.env` (`DEV`); the bare globals `__MR_BUILD_SHA__` and `__MR_BUILD_TIME__` the build defines | build configuration |
-| `client/src/main.ts` | `TELEMETRY_CONFIG`, `OIDC_ISSUER`, `SIGN_IN_OFFER`, `main` | `import.meta.env` (`VITE_MR_OTLP_ENDPOINT`, `VITE_MR_OTLP_INTERVAL_MS`, `VITE_MR_OIDC_ISSUER`, `VITE_MR_OIDC_PROVIDER_NAME`, `VITE_MR_OIDC_CLIENT_ID`, `VITE_MR_OIDC_REDIRECT_URI`, `DEV`) | build configuration |
+| `client/src/main.ts` | `TELEMETRY_CONFIG`, `SIGN_IN_OFFER`, `main` | `import.meta.env` (`VITE_MR_OTLP_ENDPOINT`, `VITE_MR_OTLP_INTERVAL_MS`, `VITE_MR_OIDC_PROVIDER_NAME`, `VITE_MR_OIDC_CLIENT_ID`, `VITE_MR_OIDC_REDIRECT_URI`, `DEV`) | build configuration |
 | `client/src/input/bindingStore.ts` | `browserStorage` | `window.` (`window.localStorage`); its three callers in `client/src/shell/inputState.ts` (`bindings`, `padBindings`, `applyTables`) and three in `client/src/main.ts` (`textStep`, `main` twice) take the handle it returns | device storage |
 | `client/src/net/authToken.ts` | `TokenStorageHost`, `storageMethod`, `createAuthTokenGate`, `readAuthKind`, `writeAuthKind` | `localStorage`, `sessionStorage` of the injected host | credential storage |
 | `client/src/net/claimCode.ts` | `ClaimCodeHost`, `storageMethod`, `drawRandomBytes` | `sessionStorage`, `readonly crypto?` of the injected host | credential storage |
@@ -357,7 +358,6 @@ fixed in the slice. The slice for a row deletes that row. The symbol lists are m
 
 | # | Module | Kind | Tier | Creates | Covering tests | Feature change |
 |---|---|---|---|---|---|---|
-| 2 | sign-in constants | move | routine | nothing | `client/src/shell/config.test.ts`, `client/src/main.signInGate.test.ts`, `client/src/main.targetKindGate.test.ts` | none added, none removed |
 | 3 | command port | interface | hard | `client/src/shell/commandPort.ts` | `client/src/main.dispatch.test.ts`, `client/src/main.menu.test.ts`, `client/src/main.signInGate.test.ts`, `client/src/main.social.test.ts` | none added, none removed |
 | 4 | notices | interface | hard | `client/src/shell/notices.ts` | `client/src/main.notices.test.ts`, `client/src/main.noticesRt.test.ts`, `client/src/main.reconnectStack.test.ts` | none added, none removed |
 | 5 | battle frame | interface | hard | `client/src/shell/battleFrame.ts` | `client/src/main.dispatch.test.ts`, `client/src/main.battle-reseed.test.ts`, `client/src/tactics/tacticsBattle.test.ts`, `client/src/tactics/deployPanel.test.ts`, `client/src/tactics/results.test.ts` | none added, none removed |
@@ -389,13 +389,6 @@ resolver gains the module when it resolves a string; this file;
 set. A row that moves boot wiring or a DEV hook (5, 14, 15) runs the full end-to-end suite as
 well.
 
-2. `client/src/shell/config.ts` takes `OPERATED_BY_US`, `OIDC_ISSUER`, `SIGN_IN_MODE` and
-   `ACCOUNT_REQUIRED`. They are constants with no writer, resolved from `TARGET_KIND` and one
-   build value; `config.ts` gains one type import (`SignInMode`) and nothing at run time.
-   `SIGN_IN_OFFER` goes with row 8; `TELEMETRY_CONFIG` and the locale block stay in `main.ts`.
-   Touches: `client/src/main.ts`, `client/src/shell/config.ts`, `client/src/shell/config.test.ts`,
-   the `client/src/main.*.test.ts` family, this file, `docs/refactors/client-shell.md` and
-   `ARCHITECTURE.md`.
 3. `client/src/shell/commandPort.ts` is created (2.2). `main.ts` installs it beside the hint host.
    `buildDeployPanel`, `buildResultsPanel`, `tacticsShellDeps`, `runInteract`, `applyMenuStep` and
    `closeTradeEditor` call `dispatch` through it, and `popOverBattleBeforeSwitch` and

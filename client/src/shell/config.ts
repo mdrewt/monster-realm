@@ -1,6 +1,7 @@
 // shell/config — the values fixed for the session: the connection target, the dev-log sinks,
-// the game-core constants and the wasm-ready mark. Module scope only resolves and reads
-// constants: it writes nothing to the document, registers nothing and reads no locale.
+// the sign-in constants, the game-core constants and the wasm-ready mark. Module scope only
+// resolves and reads constants: it writes nothing to the document, registers nothing and reads
+// no locale.
 
 // client-wasm (built `wasm-pack build client-wasm --target bundler`; resolved by
 // vite-plugin-wasm, awaited at module top level — see vite.config.ts / server.fs.allow).
@@ -13,6 +14,7 @@ import {
   step_ms,
 } from '../../../client-wasm/pkg/client_wasm.js';
 import { resolveConnectionConfig } from '../net/connectionConfig';
+import type { SignInMode } from '../net/credentialDecision';
 import { makeFateLogger, makeSendLogger, resolveDevLogLevel } from '../net/devLog';
 import { readShellDocument } from '../net/shellDocument';
 
@@ -45,6 +47,24 @@ export const sendLogger = makeSendLogger(DEV_LOG_LEVEL, (line) => console.log(li
 // sendLogger. CONSOLE-ONLY — a ring push smuggled into this sink would ship reducer args
 // (player free text) into the shared F9 bundle.
 export const fateLogger = makeFateLogger(DEV_LOG_LEVEL, (line) => console.log(line));
+
+// The build's OIDC issuer and client id go only to a server we operate. A single-player world
+// (`local`) or a friends server (`private`) gets both empty, as a build that sets no issuer does.
+// OIDC_ISSUER is the one read of the issuer: `connect` and the Account section's Sign In offer
+// both take it, so the control shows exactly where the OIDC flow holds an issuer.
+export const OPERATED_BY_US = TARGET_KIND === 'official' || TARGET_KIND === 'test';
+export const OIDC_ISSUER = OPERATED_BY_US
+  ? ((import.meta.env.VITE_MR_OIDC_ISSUER as string | undefined) ?? '')
+  : '';
+// Sign-in is on only where OIDC_ISSUER holds an issuer: a server we operate whose build names one.
+// Off, `connect` builds no OIDC client and sends no account token: the one sign-in a page can
+// still make is for a world's ticket (`WORLD_ACCESS` in main.ts), and its token never reaches
+// `connect`.
+export const SIGN_IN_MODE: SignInMode = OIDC_ISSUER === '' ? 'off' : 'oidc';
+// The official server admits no player without an account, so a build that can sign in sends it no
+// join before one connects. A `test` server may be open: there the connection learns the same
+// from the first join the server refuses (net/connection.ts `accountRequired`).
+export const ACCOUNT_REQUIRED = TARGET_KIND === 'official' && SIGN_IN_MODE === 'oidc';
 
 export const ZONE_ID = 0;
 
