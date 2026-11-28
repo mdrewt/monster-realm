@@ -14405,7 +14405,7 @@ mod acct_nh {
 
     /// On the dev-enforcing build a caller who does not own the game still deletes its
     /// account, cancels the deletion, starts a guest claim and completes one, each writing
-    /// exactly what it writes for a caller who owns the game.
+    /// exactly the rows and schedules its contract names.
     #[cfg(all(feature = "dev_issuers", not(feature = "open_join")))]
     mod acs6_enforcing_account_reducers {
         use super::*;

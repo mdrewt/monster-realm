@@ -2610,8 +2610,9 @@ fn host_check_schedule_is_private_and_no_view_returns_its_row_lpw43_2() {
 // GENERATED client bindings (their file names); each probe runs the SHIPPED reducer fn over a
 // client connection: the admission sweep as an unadmitted non-owner on a `Password` world, the
 // ownership sweep (on the dev-enforcing build) as an admitted caller that is not entitled. Only
-// the tables the gate reads are registered, none of them writable, so a reducer that writes
-// before it refuses aborts the test in the host. Dev-only reducers (`dev_reducers`,
+// the tables the gate reads are registered (and, for the ownership sweep, `player`, which seeds
+// the joined caller), none of them writable, so a reducer that writes before it refuses aborts
+// the test in the host. Dev-only reducers (`dev_reducers`,
 // `load_test_zones`) are not in the generated bindings and get no probe.
 // ---------------------------------------------------------------------------
 
@@ -3406,8 +3407,9 @@ mod admission_roster {
             }
         }
 
-        /// The tables beside [`World`]'s that an ownership check may read: `world_account` and
-        /// `player`, each by `identity`. Neither is writable or scannable.
+        /// The tables beside [`World`]'s, each by `identity`: `world_account`, which the
+        /// ownership check reads, and `player`, which seeds the caller that has joined and lets a
+        /// gated reducer that reads it past the gate be seen. Neither is writable or scannable.
         struct Owned<'a> {
             accounts: Handle<'a, WorldAccount>,
             players: Handle<'a, Player>,

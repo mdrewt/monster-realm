@@ -3608,6 +3608,185 @@ mod ownership_gate {
         );
         assert_eq!(everything(&fx, &g), before, "the refusal writes nothing");
     }
+
+    // --- the refusal is logged -----------------------------------------------------------------
+
+    /// Every `log` record of this test PROCESS. NEXTEST-ONLY, like movement_tests.rs's
+    /// `MvLogSink`: one logger may be installed per process, so plain `cargo test` (one process
+    /// for every test) fails all but the first installer.
+    struct GateLogSink(std::sync::Mutex<Vec<String>>);
+
+    impl log::Log for GateLogSink {
+        fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+            true
+        }
+        fn log(&self, record: &log::Record<'_>) {
+            self.0
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(record.args().to_string());
+        }
+        fn flush(&self) {}
+    }
+
+    static GATE_LOGS: GateLogSink = GateLogSink(std::sync::Mutex::new(Vec::new()));
+
+    /// The captured lines whose `evt` is `reject`.
+    fn reject_lines() -> Vec<String> {
+        GATE_LOGS
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|line| line.contains(r#""evt":"reject""#))
+            .cloned()
+            .collect()
+    }
+
+    fn clear_logs() {
+        GATE_LOGS
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+    }
+
+    /// The reject line for `reducer`, `who` and `reason`.
+    fn reject_line(reducer: &str, who: Identity, reason: &str) -> String {
+        format!(r#"{{"evt":"reject","reducer":"{reducer}","sender":"{who}","reason":"{reason}"}}"#)
+    }
+
+    /// The gate under `p` as `who` with no token, for the reducer `label`.
+    fn gate_for(fx: &Fixture, p: &BuildProfile, who: Identity, label: &str) -> Result<(), String> {
+        fx.run_as_conn_at(who, conn_of(who), None, at(T0), |ctx| {
+            require_admitted_under(ctx, p, label)
+        })
+    }
+
+    /// An ownership refusal is logged as exactly one reject line carrying the reducer the gate
+    /// was called for, the caller and the ownership reason, under every enforcing profile. An
+    /// admission refusal logs its own reason once and no ownership line; a caller that passes,
+    /// entitled or under a profile that does not enforce, logs nothing.
+    ///
+    /// kills: the ownership refusal returned without being logged; the ownership refusal logged
+    /// under a fixed reducer name in place of the one the gate was given; the ownership refusal
+    /// logged twice.
+    #[test]
+    fn the_gates_ownership_refusal_is_logged_once_under_the_reducer_it_was_called_for() {
+        log::set_logger(&GATE_LOGS).expect("no logger installed in this test process (nextest)");
+        log::set_max_level(log::LevelFilter::Info);
+
+        // a. an admitted caller, not entitled, under every enforcing profile.
+        for p in enforcing_profiles() {
+            for rule in RULES {
+                let fx = fixture();
+                let g = gate_world(&fx, rule);
+                g.accounts.seed(&account_row(owner(), OWNER_HANDLE, true));
+                assert!(
+                    !is_entitled(&fx, &p, let_in(), None),
+                    "fixture: not entitled under `{}`",
+                    p.name
+                );
+                let label = format!("gate_probe_{}_{rule:?}", p.name.replace('-', "_"));
+                clear_logs();
+                assert_eq!(
+                    gate_for(&fx, &p, let_in(), &label),
+                    Err(ERR_OWNERSHIP_REQUIRED.to_string()),
+                    "{rule:?}, under `{}`",
+                    p.name
+                );
+                assert_eq!(
+                    reject_lines(),
+                    vec![reject_line(&label, let_in(), ERR_OWNERSHIP_REQUIRED)],
+                    "{rule:?}, under `{}`: one reject line for the reducer the gate was given",
+                    p.name
+                );
+            }
+        }
+
+        // b. an unadmitted caller: the admission refusal, logged once, no ownership line.
+        {
+            let p = dev_enforcing();
+            let fx = fixture();
+            let g = gate_world(&fx, WorldAccessRule::Password);
+            assert_eq!(
+                admitted_at(&g.w, stranger()),
+                None,
+                "fixture: no admission row"
+            );
+            let label = "gate_probe_unadmitted";
+            clear_logs();
+            assert_eq!(
+                gate_for(&fx, &p, stranger(), label),
+                Err(REJECT_NOT_ADMITTED.to_string()),
+                "an unadmitted caller on a Password world"
+            );
+            let lines = reject_lines();
+            assert_eq!(
+                lines,
+                vec![reject_line(label, stranger(), REJECT_NOT_ADMITTED)],
+                "one admission reject line"
+            );
+            assert!(
+                lines.iter().all(|l| !l.contains(ERR_OWNERSHIP_REQUIRED)),
+                "no ownership line: {lines:?}"
+            );
+        }
+
+        // c. an entitled caller under an enforcing profile logs nothing.
+        {
+            let p = dev_enforcing();
+            assert!(
+                p.world_check_url.is_some(),
+                "fixture: `{}` names an account service",
+                p.name
+            );
+            let fx = fixture();
+            let g = gate_world(&fx, WorldAccessRule::Password);
+            g.accounts.seed(&account_row(let_in(), HANDLE, true));
+            assert!(
+                is_entitled(&fx, &p, let_in(), None),
+                "fixture: entitled by its row under `{}`",
+                p.name
+            );
+            clear_logs();
+            assert_eq!(
+                gate_for(&fx, &p, let_in(), "gate_probe_entitled"),
+                Ok(()),
+                "an entitled caller"
+            );
+            assert_eq!(
+                reject_lines(),
+                Vec::<String>::new(),
+                "an entitled caller logs nothing"
+            );
+        }
+
+        // d. a caller with nothing under a profile that does not enforce logs nothing.
+        {
+            let (named, open) = open_profiles()
+                .into_iter()
+                .next()
+                .expect("fixture: a profile that does not enforce");
+            let fx = fixture();
+            let _g = gate_world(&fx, WorldAccessRule::Password);
+            assert!(
+                !is_entitled(&fx, &dev_enforcing(), let_in(), None),
+                "fixture: the caller holds nothing an enforcing profile entitles"
+            );
+            clear_logs();
+            assert_eq!(
+                gate_for(&fx, &open, let_in(), "gate_probe_open"),
+                Ok(()),
+                "`{named}`, no token and no row"
+            );
+            assert_eq!(
+                reject_lines(),
+                Vec::<String>::new(),
+                "`{named}`: passing logs nothing"
+            );
+        }
+    }
 }
 
 // =====================================================================================
