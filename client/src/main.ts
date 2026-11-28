@@ -53,7 +53,6 @@ import {
 import { BUILD_INFO, formatBuildStamp } from './net/buildInfo';
 import { claimCode } from './net/claimCode';
 import { connect } from './net/connection';
-import type { SignInMode } from './net/credentialDecision';
 import { RATE_LIMIT_INITIAL, rateLimitTick } from './net/devLog';
 import { createOidcClient } from './net/oidc';
 import type { ProtocolMismatch } from './net/protocolCheck';
@@ -93,14 +92,18 @@ import { RenderResolver, walkableIn } from './render/renderResolver';
 import { installResizeHandler } from './render/resizeWiring';
 import { type RenderEntity, WorldRenderer } from './render/world';
 import {
+  ACCOUNT_REQUIRED,
   DB,
   DELETION_GRACE_MS_DEFAULT,
   DESKTOP_SHELL,
   fateLogger,
+  OIDC_ISSUER,
+  OPERATED_BY_US,
   PARTY_SIZE,
   PARTY_SLOT_NONE,
   PROTOCOL_VERSION,
   QUEUE_CAP,
+  SIGN_IN_MODE,
   STEP_MS,
   sendLogger,
   TARGET_KIND,
@@ -462,26 +465,11 @@ const TELEMETRY_CONFIG = resolveTelemetryConfig(
   Math.random(),
   TARGET_KIND,
 );
-// The build's OIDC issuer and client id go only to a server we operate. A single-player world
-// (`local`) or a friends server (`private`) gets both empty, as a build that sets no issuer does.
-// OIDC_ISSUER is the one read of the issuer: `connect` and the Account section's Sign In offer
-// both take it, so the control shows exactly where the OIDC flow holds an issuer.
-const OPERATED_BY_US = TARGET_KIND === 'official' || TARGET_KIND === 'test';
-const OIDC_ISSUER = OPERATED_BY_US
-  ? ((import.meta.env.VITE_MR_OIDC_ISSUER as string | undefined) ?? '')
-  : '';
-// Sign-in is on only where OIDC_ISSUER holds an issuer: a server we operate whose build names one.
-// Off, `connect` builds no OIDC client and sends no account token: the one sign-in a page can
-// still make is for a world's ticket (WORLD_ACCESS below), and its token never reaches `connect`.
-const SIGN_IN_MODE: SignInMode = OIDC_ISSUER === '' ? 'off' : 'oidc';
+// The Account section's Sign In offer takes the same issuer `connect` gets (shell/config.ts).
 const SIGN_IN_OFFER = signInOffer(
   OIDC_ISSUER,
   (import.meta.env.VITE_MR_OIDC_PROVIDER_NAME as string | undefined) ?? '',
 );
-// The official server admits no player without an account, so a build that can sign in sends it no
-// join before one connects. A `test` server may be open: there the connection learns the same
-// from the first join the server refuses (net/connection.ts `accountRequired`).
-const ACCOUNT_REQUIRED = TARGET_KIND === 'official' && SIGN_IN_MODE === 'oidc';
 // A single-player world or a friends server checks the player's account itself, from a one-use
 // ticket this client gets for it (net/worldTicket.ts). A page in a browser gets that ticket by
 // signing in to the account service, and only where the build names the service for worlds:

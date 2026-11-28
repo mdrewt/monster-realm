@@ -222,3 +222,82 @@ describe('shell config in a production build', () => {
     expect(c.TARGET_KIND).toBe('private');
   });
 });
+
+describe('shell config sign-in constants', () => {
+  const ISSUER = 'https://auth.example/realms/monster-realm/';
+  type Kind = 'official' | 'test' | 'local' | 'private' | 'no document';
+  type Issuer = 'issuer' | 'unset' | 'empty';
+  type Expected = {
+    operatedByUs: boolean;
+    oidcIssuer: string;
+    signInMode: 'oidc' | 'off';
+    accountRequired: boolean;
+  };
+  const OFF_OURS: Expected = {
+    operatedByUs: true,
+    oidcIssuer: '',
+    signInMode: 'off',
+    accountRequired: false,
+  };
+  const OFF_NOT_OURS: Expected = {
+    operatedByUs: false,
+    oidcIssuer: '',
+    signInMode: 'off',
+    accountRequired: false,
+  };
+  const CASES: ReadonlyArray<[Kind, Issuer, 'official' | 'test' | 'local' | 'private', Expected]> =
+    [
+      [
+        'official',
+        'issuer',
+        'official',
+        { operatedByUs: true, oidcIssuer: ISSUER, signInMode: 'oidc', accountRequired: true },
+      ],
+      [
+        'test',
+        'issuer',
+        'test',
+        { operatedByUs: true, oidcIssuer: ISSUER, signInMode: 'oidc', accountRequired: false },
+      ],
+      [
+        'no document',
+        'issuer',
+        'test',
+        { operatedByUs: true, oidcIssuer: ISSUER, signInMode: 'oidc', accountRequired: false },
+      ],
+      ['local', 'issuer', 'local', OFF_NOT_OURS],
+      ['private', 'issuer', 'private', OFF_NOT_OURS],
+      ['official', 'unset', 'official', OFF_OURS],
+      ['official', 'empty', 'official', OFF_OURS],
+      ['test', 'unset', 'test', OFF_OURS],
+      ['test', 'empty', 'test', OFF_OURS],
+      ['no document', 'unset', 'test', OFF_OURS],
+      ['local', 'unset', 'local', OFF_NOT_OURS],
+      ['private', 'unset', 'private', OFF_NOT_OURS],
+    ];
+
+  // Each target kind and build issuer resolves the four sign-in constants to fixed values.
+  it.each(
+    CASES,
+  )('a %s target with the build issuer %s resolves the sign-in constants', async (kind, issuer, resolvedKind, want) => {
+    if (kind !== 'no document') {
+      setShellDocument({ connection: { uri: 'wss://doc-host.example/', db: 'doc-realm', kind } });
+    }
+    if (issuer === 'issuer') {
+      vi.stubEnv('VITE_MR_OIDC_ISSUER', ISSUER);
+    } else if (issuer === 'empty') {
+      vi.stubEnv('VITE_MR_OIDC_ISSUER', '');
+      expect(import.meta.env.VITE_MR_OIDC_ISSUER, 'the issuer is set and empty').toBe('');
+    } else {
+      expect(import.meta.env.VITE_MR_OIDC_ISSUER, 'the issuer is unset').toBeUndefined();
+    }
+    const c = await loadConfig();
+    expect(c.TARGET_KIND).toBe(resolvedKind);
+    expect({
+      operatedByUs: c.OPERATED_BY_US,
+      oidcIssuer: c.OIDC_ISSUER,
+      signInMode: c.SIGN_IN_MODE,
+      accountRequired: c.ACCOUNT_REQUIRED,
+    }).toEqual(want);
+  });
+});

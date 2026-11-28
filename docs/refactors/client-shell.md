@@ -60,7 +60,7 @@ All paths are under `client/src/shell/`. The table is in import order.
 
 | # | Module | One responsibility | Shell modules it imports |
 |---|---|---|---|
-| 1 | `config.ts` | The values fixed for the session: the connection target, the dev-log sinks, the game-core constants, the wasm-ready mark | none |
+| 1 | `config.ts` | The values fixed for the session: the connection target, the dev-log sinks, the sign-in constants, the game-core constants, the wasm-ready mark | none |
 | 2 | `views.ts` | The handles of the view instances built at boot | none |
 | 3 | `inputState.ts` | The live input devices: the binding table, the keyboard source, the router, the held directions, the key codes whose repeats are cancelled | none |
 | 4 | `feedback.ts` | Where a message goes: the toast, the world hint, the announcer, the error ring and overlay | `views` |
