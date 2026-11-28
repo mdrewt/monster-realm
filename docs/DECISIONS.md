@@ -3140,15 +3140,17 @@ feature at all. A release feature together with `dev_reducers` or `load_test_zon
 compile (a const assertion, skipped under clippy, whose `--all-features` run names every feature).
 The ownership features add or remove no table, reducer, view or type.
 
-`default` in `server-module/Cargo.toml` is `["open_join"]`, so a build that names no feature is the
-test build: it admits anonymous players and trusts the two dev issuers. `spacetime publish
---module-path`, `just publish`, the playtest recipes, `scripts/smoke-republish.sh` and the nightly
-load smoke all publish that build. A default build that enforces and trusts nothing is what this
-decision aims at. It arrives when `open_join` leaves `default`, which needs each of those publish
-sites, `client/e2e/global-setup.ts`, and the `just test`, `ci-fast` and mutation recipes to name
-`open_join`. Until then only `just release-module <official|world>` makes an enforcing module to
-ship, and it does not depend on the default: it passes `--no-default-features`, and a release
-feature wins anyway.
+`default` in `server-module/Cargo.toml` is empty, so a build that names no feature enforces
+ownership, trusts no login issuer and holds no attestation key: it admits nobody. A site that
+builds for anonymous play names `open_join` itself. `just build`, `just publish`, the playtest
+recipes, `scripts/smoke-republish.sh`, the nightly load smoke and the local fallback of
+`client/e2e/global-setup.ts` hand it to the CLI's build: `spacetime build --features open_join`,
+and `--build-options="--features open_join"` on a `--module-path` publish, which reaches cargo
+(measured on CLI 2.16.1). `just test`, `just ci-fast` and the mutation recipes name it for the
+module's tests, which join anonymously. `just gen`, the bindings-drift eval and `just
+module-definition` name no feature, because the ownership features change neither the bindings nor
+the definition. `just release-module <official|world>` makes the module to ship and does not depend
+on the default: it passes `--no-default-features`, and a release feature wins anyway.
 
 On an enforcing build the gate `access::require_admitted`, which every reducer a player plays
 through opens with, makes the ownership check straight after the access rule and before the
@@ -3218,8 +3220,12 @@ constructed profiles, enforcing and not; by the `acs6_enforcing_*` modules of
 `access_tests.rs`, which run each exempt reducer on the dev-enforcing build as a caller who is not
 entitled; by `justfile.test.mjs`;
 and by `evals/account-e2e.eval.mjs`, which on a live host publishes a dev-enforcing build
-(anonymous and unentitled tokens refused, an entitled one joins) and the `official` artefact `just
-release-module` built (anonymous and a dev-issuer token refused, no `account` row).
+(anonymous and unentitled tokens refused, an entitled one joins), the `official` artefact `just
+release-module` built (anonymous and a dev-issuer token refused, no `account` row) and the artefact
+cargo builds when no feature is named (its section reads `profile=default`,
+`enforces_ownership=true`, `dev_reducers=false` and no login issuer; `join_game` answers `ownership
+required` to an anonymous token and to the entitled token the dev-enforcing build admits, and
+`request_bind_nonce` answers `this server takes no world binding`).
 
 `accounts::entitled(ctx, profile)` entitles everyone on a build that does not enforce. An enforcing
 build entitles a connection whose login token entitles it, or whose identity holds a `world_account`
@@ -3236,12 +3242,11 @@ in a `local` or `private` world stops nobody who signs with that key. No feature
 the `hosted-dev` attestation keys alone, and `hosted-dev` publishes none; a dev build that has to
 hold against strangers needs one (`docs/account-service.md`, "Attestation keys").
 
-**Why.** The aim is that no input's omission ships an open module: `spacetime publish
---module-path` and `spacetime generate` build with the default features unless told otherwise, and
-once `open_join` leaves `default` what they build admits nobody. Until then the default is the test
-build, and a module to ship comes only from `just release-module`, which names no default. The only
-way to an open module is to name a dev feature, which no recipe that ships does. It is the rule dev
-behaviour already follows (see "Dev-only reducers never ship"): the dev thing is the opt-in.
+**Why.** No input's omission ships an open module: `spacetime publish --module-path` and
+`spacetime generate` build with the default features unless told otherwise, and what they then
+build admits nobody. The only way to an open module is to name a dev feature, which no recipe that
+makes a module to ship does. It is the rule dev behaviour already follows (see "Dev-only reducers
+never ship"): the dev thing is the opt-in.
 The ownership rule is made where the admission rule is, in the one gate, so the roster that proves
 every reducer makes the access check proves this one too and a reducer added later cannot leave it
 out. The reducers that do not ask are the ones a player who is not entitled must still reach:
@@ -3259,8 +3264,8 @@ machine would need a build input the feature set does not have); an ownership ca
 each reducer, or a list of exempt names read inside the gate (its `reducer` argument is a log
 label); an ownership check on the account's deletion, export or claim reducers, on the unbind or on
 an owner-only reducer. Accepted cost: every site that
-builds or publishes for anonymous play names `open_join` once `open_join` leaves `default`; until
-then those sites get it from the default.
+builds or publishes for anonymous play names `open_join`, and one that leaves it out gets a module
+that refuses every join.
 
 ## The client learns that a server needs an account from its kind or from the first refusal; the menu frame is the sign-in screen
 

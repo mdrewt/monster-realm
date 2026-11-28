@@ -186,9 +186,9 @@ jobs:
           cache-dependency-path: client/package-lock.json
       - uses: ./.github/actions/tools
         with: { wasm: true }
-      # The e2e suite needs the dev_reducers build; `publish` has no feature passthrough, so
-      # global-setup publishes this prebuilt artifact via --bin-path. The committed
-      # bindings are NOT regenerated from it.
+      # The e2e suite needs the dev_reducers build: this step builds it and global-setup publishes
+      # the artifact via --bin-path (MR_DEV_MODULE_WASM below). The committed bindings are NOT
+      # regenerated from it.
       - name: Build dev_reducers module wasm
         run: cargo build -p monster-realm-module --release --target wasm32-unknown-unknown --features dev_reducers
       - name: Start SpacetimeDB

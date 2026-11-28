@@ -487,9 +487,9 @@ enforces ownership, and how a connection reaches the admission and binding calls
 `join_game`. Question (d), plaintext `ws:` to a friends server, is decided in DECISIONS.md ("Private
 servers carry their own encryption…"). Fork (a)'s module half is built (`server-module/src/access.rs`);
 its gate half is not. The module halves of forks (b) and (c) are built (`server-module/src/world_binding.rs`);
-the client's bind flow, the shell and gate halves and the run over two real hosts are not. Fork (e)'s features, constants, check, artefact
-section and recipe are built (`server-module/Cargo.toml`, `server-module/src/accounts.rs`,
-`justfile`); its default is not, since the default feature list holds `open_join`. Work is named by its id in the
+the client's bind flow, the shell and gate halves and the run over two real hosts are not. Fork (e) is built: its features, constants, check, artefact
+section and recipe (`server-module/Cargo.toml`, `server-module/src/accounts.rs`, `justfile`), and
+a default feature list that holds nothing. Work is named by its id in the
 harness specs `M-local-play.spec.md` (lpw-9: the open or password rule; lpw-11 to lpw-14: the
 desktop shell, its host gate and opening a world to friends; lpw-15: binding, ownership and the
 allowlist; lpw-18: the certificate and the pin) and `M-account-service.spec.md` (acs-3: the
@@ -501,7 +501,7 @@ it proves.
 | (a) An unadmitted connection      | A1: the connect reducer refuses an identity the rule has not admitted, every reducer a player can call makes the same check, connections open when the rule changes are admitted, and the owner relays the door                                                           | A2: row filters on every public table. A3: every table private behind a view. A1 at connect only                                    | lpw-9.2 and lpw-20.1 to lpw-20.3 in `server-module/src/access_tests.rs`; `mod admission_roster` and `mod reducer_arguments` in `server-module/src/privacy_enforcement_tests.rs`             |
 | (b) The official server's refusal | B1: the official build holds no attestation key, and a world build trusts no login issuer                                                                                                                                                                                 | B2: a row or flag in the database. B3: the world-name check and the route alone. B4: a database identity compiled in                | lpw-15.3 in `server-module/src/world_binding_tests.rs` (`mod official_build`, run under the `official` build; `mod binding_build` on every build)                                           |
 | (c) What the attestation names    | C2: the server as the player's own software authenticated it, `spki:<fingerprint>/<db>` or `dns:<host>:<port>/<db>`, bound from the desktop shell; a browser's way in, and `ip:<address>:<port>/<db>`, are "A browser binds a friends server it reached by address" below | C1: the key that verifies the client's world token. C3: the server's address or database identity. C2 with a browser flow built now | lpw-15.4 in `server-module/src/world_binding_tests.rs` (`mod bind_refuses`, `mod relay_rig`); the client's half is not built                                                                |
-| (e) The build input               | E2: a build enforces ownership unless the feature `open_join` is named; `official` and `world` are the two release builds                                                                                                                                                 | E1: a feature that switches enforcement on. E3: an environment variable at build time. E4: a row at run time                        | lpw-15.7 in `server-module/src/world_binding_tests.rs`; acs-6.1 to acs-6.5 in `server-module/src/accounts_tests.rs`, `server-module/src/movement_tests.rs` and `evals/account-e2e.eval.mjs` |
+| (e) The build input               | E2: a build enforces ownership unless the feature `open_join` is named; `official` and `world` are the two release builds                                                                                                                                                 | E1: a feature that switches enforcement on. E3: an environment variable at build time. E4: a row at run time                        | lpw-15.7 in `server-module/src/world_binding_tests.rs`; acs-6.1 to acs-6.5 in `server-module/src/accounts_tests.rs`, `server-module/src/movement_tests.rs` and `evals/account-e2e.eval.mjs`; lpw-37.1, the build that names no feature, in `evals/account-e2e.eval.mjs` |
 
 Each fork was scored by a judge from one evidence dossier, 1 (poor) to 5 (excellent) per criterion,
 with the weights (in brackets) fixed before scoring. An alternative that fails its gate is scored
@@ -552,7 +552,8 @@ left a stranger 1 of its 20 rows over `/sql` and in a subscription, while the ow
 - _In every reducer._ Every reducer of the generated client roster except the owner-only ones
   (`sync_content`, `set_world_access`, `set_world_names`, `set_world_allowlist`,
   `drop_world_binding` and the two relayed binding reducers) and `unbind_world_account`, which makes no admission check, makes the
-  same check (`access::require_admitted`) before anything else, because a connection opened while its identity
+  same check before anything else (through `access::require_admitted`, which also makes the ownership check, or through
+  `access::require_rule_admits` in the five reducers of the account's own), because a connection opened while its identity
   was admitted, or while the rule was `Open`, is not checked again by the host. The test
   `mod admission_roster` in `server-module/src/privacy_enforcement_tests.rs` holds it: it takes the
   roster from the file names of `client/src/module_bindings/*_reducer.ts` and executes each shipped
@@ -570,9 +571,9 @@ left a stranger 1 of its 20 rows over `/sql` and in a subscription, while the ow
   reducer and without authentication, an HTTP route to one, or a row filter. A check of the
   generated module definition refuses each, at any submodule depth, and any section kind it does
   not know (`findDefinitionViolations` in `scripts/verify-release-reducers.mjs`). It reads the
-  definition `spacetimedb-standalone extract-schema` takes from a built module: the default build in
-  `just ci` (`just module-definition`) and each artefact `just release-module` makes, because a
-  declaration behind a release feature is not in the default build. A native test cannot make the
+  definition `spacetimedb-standalone extract-schema` takes from a built module: the build that
+  names no feature in `just ci` (`just module-definition`) and each artefact `just release-module`
+  makes, because a declaration behind a release feature is not in that build. A native test cannot make the
   check: the test binary keeps no describer that no test calls, so a handler or a filter never
   reaches the fixture's definition (measured on 2.12.0 with a planted handler, route and filter).
   All three sit behind the `spacetimedb` crate's `unstable` feature, which the workspace enables
@@ -893,13 +894,13 @@ A release feature with `dev_reducers` is a compile error, since the constants ca
 reducer; the error is skipped under clippy, whose `--all-features` run (`just lint`) names every
 feature at once. The ownership features add or remove no table, reducer, view or type.
 
-**The recipe that produces a shipped module cannot omit it.** The target is that there is nothing to omit:
+**The recipe that produces a shipped module cannot omit it.** There is nothing to omit:
 leaving every feature out gives a module that enforces ownership and admits nobody, and enforcement
-comes off only by naming a dev feature. Today `default = ["open_join"]` in
-`server-module/Cargo.toml`, so a build that names no feature is the test build, which admits
-anonymous players and trusts the dev issuers. `spacetime publish --module-path` and
-`spacetime generate` build with the default features unless `--build-options` passes others to the
-build, so a module published without saying so is the default build. One
+comes off only by naming a dev feature. `default = []` in `server-module/Cargo.toml`.
+`spacetime publish --module-path` and `spacetime generate` build with the default features unless
+`--build-options` passes others to the build, so a module published without saying so is that
+build: `join_game` answers `ownership required` to every caller and the bind reducers answer `this
+server takes no world binding`. One
 recipe makes a module to ship, `just release-module <official|world>`: it refuses any other
 argument; it builds the module alone, with exactly that feature, `--locked` and
 `--no-default-features`, into a target directory of its
@@ -911,12 +912,17 @@ artefact with its SHA-256. The shell, the standalone server and the official dep
 publish that artefact by its hash. The artefact is the thing checked, because
 `spacetime describe --json` reads the same for every profile.
 
-What changes when `open_join` leaves `default`: every site that builds or publishes for anonymous
-play names `open_join`: in `justfile` (the first line of `just test`, `ci-fast` and the mutation
-recipes included, since the module's own tests join), `scripts/smoke-republish.sh`,
-`client/e2e/global-setup.ts` and the load smoke in `.github/workflows/nightly.yml`; a site that
-publishes with `--module-path` passes it through `--build-options`, which was tried here for
-argument parsing only. Until then those sites get `open_join` from the default. The recipe and the
+Every site that builds or publishes for anonymous play names `open_join`: in `justfile` (`build`,
+`publish`, the playtest recipes, and the first line of `just test`, `ci-fast` and the mutation
+recipes, since the module's own tests join), `scripts/smoke-republish.sh`, the local fallback of
+`client/e2e/global-setup.ts` and the load smoke in `.github/workflows/nightly.yml`. A site that
+builds through the CLI passes `--features open_join` to `spacetime build`, and one that publishes
+with `--module-path` passes `--build-options="--features open_join"`; both reach cargo (measured
+on CLI 2.16.1: the artefact's section reads `profile=test`, and an anonymous `join_game` is
+accepted). A site that leaves the feature out gets the build that admits nobody, so its first join
+fails. `just gen`, the bindings-drift eval and `just module-definition` name no feature: the
+generated bindings are byte-identical with no feature, `open_join`, `dev_issuers` and `official`
+(measured). The recipe and the
 reader of the artefact's profile (`just module-profile`) are built. Ranked play reads the
 production list (`PRODUCTION_LOGIN_ISSUERS`, in `ranked_enforcement_active` in
 `server-module/src/pvp.rs`), not the build's own, so it is inert in every build while that list is
@@ -936,13 +942,13 @@ omission, and the input is in no manifest. E4, a row at run time: fork (b)'s B2.
 
 Because the precedence is computed in code, a feature given to the compiler from outside cargo
 cannot split a release feature from enforcement. The design is reopened if the ownership features
-turn out to change the schema or the generated bindings, which is measured when they are built.
+turn out to change the schema or the generated bindings; as built they change neither.
 
 **Proved by.** Both sides, for each consumer:
 
 | Side of the switch | acs-6                                                                                                                                                                                                                                                                                                                                             | lpw-15                                                                                                                                                                                                                                           |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Enforcing          | acs-6.1 to acs-6.3 in `server-module/src/accounts_tests.rs` and `server-module/src/movement_tests.rs`, run under `dev_issuers`; acs-6.5 in `evals/account-e2e.eval.mjs`, which builds through `just release-module` and, on a live host, requires an anonymous `join_game` refused, no account for a dev-issuer token, and the artefact's profile | lpw-15.7 in `server-module/src/world_binding_tests.rs`, run under `dev_issuers`: an unbound caller, and one whose binding carried no entitlement, are refused by `join_game` under `Open`, `Password` and `Allowlist`; lpw-15.3 under `official` |
+| Enforcing          | acs-6.1 to acs-6.3 in `server-module/src/accounts_tests.rs` and `server-module/src/movement_tests.rs`, run under `dev_issuers`; `mod admission_roster` in `server-module/src/privacy_enforcement_tests.rs`, which under `dev_issuers` runs every gated reducer as an admitted caller who is not entitled; acs-6.5 in `evals/account-e2e.eval.mjs`, which builds through `just release-module` and, on a live host, requires an anonymous `join_game` refused, no account for a dev-issuer token, and the artefact's profile; lpw-37.1 in the same eval, which builds with no feature named and requires the artefact's profile to be `default` with no login issuer, `join_game` refused for an anonymous token and for an entitled dev-issuer token, and the bind refused | lpw-15.7 in `server-module/src/world_binding_tests.rs`, run under `dev_issuers`: an unbound caller, and one whose binding carried no entitlement, are refused by `join_game` under `Open`, `Password` and `Allowlist`; lpw-15.3 under `official` |
 | Not enforcing      | acs-6.4: the e2e suite's anonymous joins on the `dev_reducers` module (`client/e2e/global-setup.ts`), and the module's own joins in `server-module/src/movement_tests.rs` under `open_join`                                                                                                                                                       | the same joins by an unbound caller, accepted under `open_join`, in `server-module/src/world_binding_tests.rs`                                                                                                                                   |
 
 The rule itself is one function over the build's profile, the caller's claims and its binding, with
@@ -950,8 +956,8 @@ the profile an argument, so one test table in `server-module/src/accounts_tests.
 row of the table above in a single build; one more test per profile holds the constants to that
 table.
 
-**The order of calls.** `join_game` is the only reducer that asks whether the caller is entitled,
-and a player row exists only through it.
+**The order of calls.** Every reducer a player plays through asks whether the caller is entitled
+(the gate `access::require_admitted`), and a player row exists only through `join_game`.
 
 - _The official server._ Connect with a login token from the production issuer, then `join_game`.
   The bind is refused.
@@ -969,9 +975,9 @@ and a player row exists only through it.
   The list is read at every check and nothing is stored from it.
 
 An admitted connection that has not bound can read what any connection reads, on every build, as
-an unentitled connection can on the official server: the ownership rule gates `join_game`, and
-with it every reducer that acts in the world, not reading. A connection that is refused the bind
-plays nothing and can watch.
+an unentitled connection can on the official server: the ownership rule gates the reducers a
+player plays through, not reading. A connection that is refused the bind plays nothing and can
+watch.
 
 #### What this changes in the slices as specified
 

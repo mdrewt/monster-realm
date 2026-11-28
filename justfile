@@ -30,16 +30,19 @@ typecheck:
 test:
     #!/usr/bin/env bash
     set -euo pipefail
-    cargo nextest run --workspace
-    # The dev-reducer tests are compiled out of the default build, so they only run with the feature.
+    # The module's tests join anonymously, so their build names `open_join`: a build that names no
+    # feature enforces ownership and admits nobody.
+    cargo nextest run --workspace --features monster-realm-module/open_join
+    # The dev-reducer tests are compiled out of every build that does not name the feature.
     # `--workspace` plus a package filter keeps the workspace's unified dependency features, so
     # only the module recompiles; `-p` resolves features for the one package and rebuilds its deps.
     cargo nextest run --workspace --features monster-realm-module/dev_reducers -E 'package(monster-realm-module)'
     # The load build's game-core and module tests (the generated zones, dev_place_in_load_zone) are
     # compiled out of every other build; this line runs both packages whole with that feature.
     cargo nextest run --workspace --features monster-realm-module/load_test_zones -E 'package(game-core) | package(monster-realm-module)'
-    # The ownership check refuses nobody on a build that names `open_join`, the default included, so
-    # the reducer's own refusals run on a real dev-enforcing build: `dev_issuers` and no default.
+    # The ownership check refuses nobody on a build that names `open_join`, so the reducer's own
+    # refusals run on a real dev-enforcing build: `dev_issuers` alone. `--no-default-features` keeps
+    # the line that build whatever the manifest's `default` holds.
     cargo nextest run --workspace --no-default-features --features monster-realm-module/dev_issuers -E 'package(monster-realm-module) & test(/acs6_enforcing/)'
     cargo test --doc --workspace
     door() {
@@ -142,8 +145,10 @@ observability-validate:
 gen:
     spacetime generate --lang typescript --module-path server-module --out-dir client/src/module_bindings
 
+# The dev loop's build, for anonymous play: it names `open_join`, as `just publish` does, so both
+# share one cargo build.
 build:
-    spacetime build --module-path server-module
+    spacetime build --module-path server-module --features open_join
 
 # ---- modules to ship (docs/local-play.md §3, "The build input") ----
 
@@ -258,9 +263,11 @@ release-module profile:
     console.log(`release-module: ${profile} ${sha256} ${realpathSync(out)}`);
     EOF
 
-# Build the module with its default features, as `just build`, `just gen` and `just playtest-up` do,
-# and refuse it when the definition the host reads from it declares an HTTP handler, an HTTP route
-# or a row filter, or when that definition cannot be read. The definition is read as
+# Build the module naming no feature, as `just gen` and the bindings-drift eval do, and refuse it
+# when the definition the host reads from it declares an HTTP handler, an HTTP route or a row
+# filter, or when that definition cannot be read. The ownership features gate no table, reducer,
+# view, handler or filter, so the `open_join` build that `just build` and `just playtest-up` make
+# has the same definition. The definition is read as
 # `just release-module` reads it, with `spacetimedb-standalone extract-schema` from the directory of
 # the `spacetime` CLI on PATH, and checked by scripts/verify-release-reducers.mjs. A native test
 # cannot do this: the test binary keeps no describer that no test calls, so a handler or a filter
@@ -310,8 +317,10 @@ module-definition:
 # only when a database is created, so `sync_content` is what brings the content and the protocol
 # numbers of an existing one in line with the module just published. It refuses every caller but
 # the identity that first published the database, and the recipe then exits non-zero.
+# The build is the `open_join` build: `--build-options` hands cargo the feature on a
+# `--module-path` publish.
 publish:
-    spacetime publish --module-path server-module {{db}}
+    spacetime publish --module-path server-module --build-options="--features open_join" {{db}}
     spacetime call {{db}} sync_content
 
 # Playwright multi-client e2e (both projects) against a running spacetime. `args` go to
@@ -370,10 +379,11 @@ e2e-shards: wasm
         exit 1
     fi
 
-# Inner loop for one crate.
+# Inner loop for one crate. The module's tests join anonymously, so its test build names
+# `open_join`; cargo refuses that feature on any other crate.
 ci-fast crate:
     cargo clippy -p {{crate}} --all-targets --all-features -- -D warnings
-    cargo nextest run -p {{crate}}
+    cargo nextest run -p {{crate}} {{ if crate == "monster-realm-module" { "--features open_join" } else { "" } }}
     cargo test --doc -p {{crate}}
 
 # Opt-in local sccache: eval "$(just cache-on)"
@@ -400,8 +410,11 @@ perf-budget:
 coverage: wasm
     cd client && npm ci && npm i --no-save -D @vitest/coverage-v8@$(node -p 'require("vitest/package.json").version') && npx vitest run --coverage --coverage.provider=v8 --coverage.reporter=text --coverage.reporter=json-summary
 
+# Every crate's mutants. The module's tests join anonymously, so each test run names `open_join`;
+# `--test-workspace=true` makes that run the whole workspace's, because cargo refuses the feature
+# when the run selects a package that does not have it.
 mutate:
-    cargo mutants --workspace
+    cargo mutants --workspace --test-workspace=true --features monster-realm-module/open_join
 
 # game-core mutation gate, zero tolerance: any missed mutant fails; timeouts are
 # tolerated only when missed=0.
@@ -448,12 +461,24 @@ mutate-core shard="":
 # check; `monster-realm-module` alone is the server's zero-tolerance gate, which CI runs on every
 # pull request. An empty diff exits 0 without building. Same exit triage as mutate-core (0 ok,
 # 2 missed, 3 timeouts).
+#
+# The module's tests join anonymously, so every test run names `open_join`. With both crates the
+# run is the whole workspace's (`--test-workspace=true`): cargo refuses the feature when the run
+# selects game-core, which does not have it.
 mutate-diff base="origin/master" package="":
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{package}}" in
-        "") paths=(game-core server-module); packages=(-p game-core -p monster-realm-module) ;;
-        monster-realm-module) paths=(server-module); packages=(-p monster-realm-module) ;;
+        "")
+            paths=(game-core server-module)
+            packages=(-p game-core -p monster-realm-module)
+            features=(--test-workspace=true --features monster-realm-module/open_join)
+            ;;
+        monster-realm-module)
+            paths=(server-module)
+            packages=(-p monster-realm-module)
+            features=(--features open_join)
+            ;;
         *) echo "mutate-diff: package '{{package}}' is not empty or monster-realm-module" >&2; exit 64 ;;
     esac
     diff_file=$(mktemp)
@@ -464,7 +489,7 @@ mutate-diff base="origin/master" package="":
     # One rebuild per mutant: incremental, for the same reason as mutate-core.
     export CARGO_INCREMENTAL=1
     status=0
-    cargo mutants "${packages[@]}" --test-tool nextest --in-diff "$diff_file" || status=$?
+    cargo mutants "${packages[@]}" "${features[@]}" --test-tool nextest --in-diff "$diff_file" || status=$?
     if [ "$status" -ne 0 ] && [ "$status" -ne 2 ] && [ "$status" -ne 3 ]; then
         echo "cargo mutants failed with exit $status (not a mutation verdict)" >&2
         exit "$status"
@@ -479,7 +504,8 @@ mutate-diff base="origin/master" package="":
 # The full server-module mutation sweep, a report: it lists every surviving mutant and exits 0
 # whatever survives; it fails only when cargo-mutants gave no verdict. The server's zero-tolerance
 # gate is `mutate-diff` on a pull request's changed lines; the weekly sweep files these survivors
-# as one issue. The crate is `monster-realm-module`.
+# as one issue. The crate is `monster-realm-module`; its tests join anonymously, so the test build
+# names `open_join`.
 #
 # Unsharded (`shard` empty) it runs the whole crate. The weekly sweep runs a matrix of `k/n` shards
 # to fit the 6 h job cap.
@@ -497,7 +523,7 @@ mutate-server shard="":
     export CARGO_INCREMENTAL=1
     echo "CARGO_INCREMENTAL=$CARGO_INCREMENTAL"
     status=0
-    cargo mutants -p monster-realm-module --test-tool nextest ${shard_args[@]+"${shard_args[@]}"} || status=$?
+    cargo mutants -p monster-realm-module --features open_join --test-tool nextest ${shard_args[@]+"${shard_args[@]}"} || status=$?
     # 0 = clean; 2 = missed mutants; 3 = timeouts (a hang is a detection, so they count as
     # caught; they may accompany missed). Anything else (a build or baseline test failure) is not a
     # verdict, so there is no survivor list to report: fail.
@@ -519,8 +545,9 @@ smoke-republish:
     bash scripts/smoke-republish.sh "${STDB_SERVER:-http://127.0.0.1:3000}" "${MR_SMOKE_DB:-monster-realm-smoke}"
 
 # The load driver for a few seconds: one level of 20 bots against the database MR_LOAD_DB (default
-# monster-realm-load, kept apart from the dev database), which must already hold a published default
-# module build. Needs a running SpacetimeDB (STDB_SERVER, default http://127.0.0.1:3000). Prints the
+# monster-realm-load, kept apart from the dev database), which must already hold a published
+# `open_join` module build: the bots join anonymously. Needs a running SpacetimeDB (STDB_SERVER,
+# default http://127.0.0.1:3000). Prints the
 # JSON report on stdout and the level table on stderr, then exits non-zero when the run fails, the
 # ramp aborts or the level is invalid (--fail-on-invalid).
 load-smoke:
@@ -533,7 +560,7 @@ load-smoke:
 # --db monster-realm-load-zones --zones 100 --hot-zone 50 --walking-share 30 ...`. It is a dev build
 # (every dev reducer is in it), so it publishes only to a database named monster-realm-load-zones*,
 # only to an http(s) URL on a loopback host unless MR_LOAD_ALLOW_REMOTE=1, and builds in its own
-# target dir so no default or e2e wasm is overwritten.
+# target dir so no other build's wasm is overwritten.
 load-host:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -575,9 +602,10 @@ playtest-preflight:
         exit 1
     fi
 
-# Publish the honest release module (default features) to the isolated playtest DB, seed
-# content, prove no dev reducers / DEV hooks, build the client, and serve the production build.
-# Depends on `wasm` so a fresh clone's `npm run build` finds the prediction pkg.
+# Publish the playtest module to the isolated playtest DB, seed content, prove no dev reducers /
+# DEV hooks, build the client, and serve the production build. The module is the `open_join` build
+# with no dev reducer: a playtester has no account, and a build that names no feature admits
+# nobody. Depends on `wasm` so a fresh clone's `npm run build` finds the prediction pkg.
 playtest-up: wasm
     #!/usr/bin/env bash
     set -euo pipefail
@@ -588,8 +616,8 @@ playtest-up: wasm
         exit 1
     fi
     just playtest-preflight
-    spacetime build --module-path server-module
-    spacetime publish -s "$STDB_SERVER" --module-path server-module -y "$MR_PLAYTEST_DB"
+    spacetime build --module-path server-module --features open_join
+    spacetime publish -s "$STDB_SERVER" --module-path server-module --build-options="--features open_join" -y "$MR_PLAYTEST_DB"
     if ! SYNC_OUT=$(spacetime call -s "$STDB_SERVER" "$MR_PLAYTEST_DB" sync_content 2>&1); then
         echo "playtest-up: sync_content call exited non-zero: $SYNC_OUT" >&2
         exit 1
@@ -627,7 +655,8 @@ playtest-verify-release:
 playtest-verify-build:
     node scripts/verify-build-hooks.mjs
 
-# Delete-data republish + reseed of the playtest DB, then re-verify no dev reducers.
+# Delete-data republish + reseed of the playtest DB with the same `open_join` build, then
+# re-verify no dev reducers.
 playtest-wipe:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -638,7 +667,7 @@ playtest-wipe:
         exit 1
     fi
     just playtest-preflight
-    spacetime publish -s "$STDB_SERVER" --module-path server-module --delete-data -y "$MR_PLAYTEST_DB"
+    spacetime publish -s "$STDB_SERVER" --module-path server-module --build-options="--features open_join" --delete-data -y "$MR_PLAYTEST_DB"
     if ! SYNC_OUT=$(spacetime call -s "$STDB_SERVER" "$MR_PLAYTEST_DB" sync_content 2>&1); then
         echo "playtest-wipe: sync_content call exited non-zero: $SYNC_OUT" >&2
         exit 1

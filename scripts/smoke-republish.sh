@@ -27,10 +27,13 @@ fail() { echo "[smoke-republish] FAIL: $*" >&2; exit 1; }
 # leave lib.rs patched locally without any diagnostic).
 trap 'git checkout -- server-module/src/lib.rs 2>/dev/null || echo "[smoke-republish] WARNING: could not restore server-module/src/lib.rs — restore manually" >&2' EXIT
 
+# Every build and publish below names `open_join`: Phase 2 joins as the CLI's identity, which holds
+# no account, and a build that names no feature admits nobody.
+
 # Phase 1: initial publish (creates fresh DB, runs init → seeds content V_orig)
 log "Phase 1: build + initial publish (--delete-data, fresh state)"
-spacetime build --module-path server-module
-spacetime publish -s "$SERVER" --module-path server-module --delete-data -y "$DB"
+spacetime build --module-path server-module --features open_join
+spacetime publish -s "$SERVER" --module-path server-module --build-options="--features open_join" --delete-data -y "$DB"
 
 # Phase 2: create test data via reducer call.
 # join_game creates a starter monster (session-independent table) in addition to
@@ -75,8 +78,8 @@ log "Phase 3: CONTENT_VERSION patched: $ORIG_VERSION → $BUMP_VERSION"
 # Phase 4: rebuild + republish WITHOUT --delete-data (live-content-update path).
 # Promise: publish on a live DB must not wipe existing rows.
 log "Phase 4: rebuild + republish WITHOUT --delete-data"
-spacetime build --module-path server-module
-spacetime publish -s "$SERVER" --module-path server-module -y "$DB"
+spacetime build --module-path server-module --features open_join
+spacetime publish -s "$SERVER" --module-path server-module --build-options="--features open_join" -y "$DB"
 
 # Phase 5: call sync_content as the module owner (owner-callable since 12.5b-1).
 # sync_content_inner detects the version mismatch and re-seeds all registries.
@@ -170,7 +173,7 @@ expect_protocol_row "$OTHER_PROTOCOL" "$OTHER_MIN_CLIENT" "after the overwrite"
 # The source is unchanged since Phase 4 (publish builds it again from that same source), over
 # the same data.
 log "Phase 7: republish WITHOUT --delete-data (CONTENT_VERSION unchanged)"
-spacetime publish -s "$SERVER" --module-path server-module -y "$DB"
+spacetime publish -s "$SERVER" --module-path server-module --build-options="--features open_join" -y "$DB"
 # The publish alone restores nothing, so the restore below is the owner's sync_content's.
 expect_protocol_row "$OTHER_PROTOCOL" "$OTHER_MIN_CLIENT" "after the republish, before sync_content"
 

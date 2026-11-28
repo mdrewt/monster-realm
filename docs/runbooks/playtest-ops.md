@@ -1,8 +1,8 @@
 # Runbook: local playtest operations
 
 How to publish, serve, reset and identify a local playtest build. A playtest build is
-the default release module (no `dev_reducers`) published to an isolated database,
-plus the production client bundle (no DEV debug hooks). Every recipe here is in the
+the `open_join` module (it admits anonymous players; no `dev_reducers`) published to an isolated
+database, plus the production client bundle (no DEV debug hooks). Every recipe here is in the
 `justfile`.
 
 ## Prerequisites
@@ -32,9 +32,11 @@ line. It exits 1 with a one-line pointer to `spacetime start` when no server ans
 ## `just playtest-up`
 
 1. Refuses a dev-default `MR_PLAYTEST_DB`, then runs the preflight.
-2. `spacetime build --module-path server-module`.
-3. `spacetime publish -s "$STDB_SERVER" --module-path server-module -y "$MR_PLAYTEST_DB"`,
-   with no features and no `--delete-data`, so existing data survives.
+2. `spacetime build --module-path server-module --features open_join`.
+3. `spacetime publish -s "$STDB_SERVER" --module-path server-module
+   --build-options="--features open_join" -y "$MR_PLAYTEST_DB"`, with no `--delete-data`, so
+   existing data survives. Both steps name `open_join` because a playtester has no account, and a
+   build that names no feature admits nobody.
 4. `spacetime call ... sync_content`, failing if the output says rejected or
    unauthorized. Only the identity that first published the database (its owner) may
    call it.
@@ -121,7 +123,8 @@ from an earlier module has to be wiped, in one step, when the consolidation merg
 1. The playtest database: `just playtest-wipe`, from a checkout of the merged commit, as
    the identity that owns the database.
 2. A local development database: `spacetime publish --module-path server-module
-   --delete-data -y <name>` (the default name is `monster-realm`), then
+   --build-options="--features open_join" --delete-data -y <name>` (the default name is
+   `monster-realm`), then
    `spacetime call <name> sync_content`. `just publish` keeps data, so on such a database
    it stops with "publishing would require manual migration or deletion of data".
 
