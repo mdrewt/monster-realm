@@ -295,21 +295,21 @@ past `MAX_ITEM_STACK` or `MAX_BALANCE` is refused before anything moves (`check_
   the character's zone, tile and facing in the private `last_position` table
   (`movement::save_last_position`).
 - Schedules. In a world with nobody connected the schedules that keep running are the 60 s
-  `mr_heartbeat`, which writes no row, and, once the host has marked its own account, the
-  hourly `host_account_check` tick. Every reaper is a one-shot armed when something is owed.
-  One that serves an entity (a trade offer, a challenge, an account deletion) has a row per
-  entity at its deadline. `playtest_reaper` and `export_bundle_reaper` bound a table by age
-  and have at most one row for the whole table, at the oldest row's expiry: the insert arms
-  it, the reaper re-arms it from the rows it leaves, and an empty table has none. Each has a
-  fixed delay (300 s and 3600 s), and a run arms its next run no sooner than that delay from
-  now, so it runs at most once per delay; work owed at once (a table over its cap, a backlog
-  one run could not finish) waits that delay too. `battle_summary_reaper` bounds its table
-  by row count in the same shape (see "Schema and privacy model"). The runtime consumes a
-  one-shot row even when its reducer's transaction fails, and the re-arm rolls back with
-  that transaction, so a failed run leaves nothing armed until the next write to the table
-  (a recruit attempt for `playtest_event`; an export request or a purge for
-  `export_bundle`), `init` or `sync_content` re-arms it from the table's true oldest row.
-  `docs/runbooks/observability-dr.md` says how to see that state.
+  `mr_heartbeat`, which writes no row, and, once the owner has named the host's identity,
+  the hourly `host_account_check` tick. Every reaper is a one-shot armed when something is
+  owed. One that serves an entity (a trade offer, a challenge, an account deletion) has a
+  row per entity at its deadline. `playtest_reaper` and `export_bundle_reaper` bound a table
+  by age and have at most one row for the whole table, at the oldest row's expiry: the
+  insert arms it, the reaper re-arms it from the rows it leaves, and an empty table has
+  none. Each has a fixed delay (300 s and 3600 s), and a run arms its next run no sooner
+  than that delay from now, so it runs at most once per delay; work owed at once (a table
+  over its cap, a backlog one run could not finish) waits that delay too.
+  `battle_summary_reaper` bounds its table by row count in the same shape (see "Schema and
+  privacy model"). The runtime consumes a one-shot row even when its reducer's transaction
+  fails, and the re-arm rolls back with that transaction, so a failed run leaves nothing
+  armed until the next write to the table (a recruit attempt for `playtest_event`; an export
+  request or a purge for `export_bundle`), `init` or `sync_content` re-arms it from the
+  table's true oldest row. `docs/runbooks/observability-dr.md` says how to see that state.
 
 ### Movement
 
@@ -1159,28 +1159,26 @@ root, so opening one never closes a sibling.
   (`crypto.getRandomValues`, `net/claimCode.ts`), stores it per tab, and calls
   `start_guest_claim(code)` as the guest before redirecting to sign-in. The server stores it
   in the private `guest_claim` table with a 15-minute TTL (`CLAIM_TTL_MS`) and a one-shot
-  reaper. After sign-in, the
-  account calls `complete_guest_claim(code)`. Guards run in order: signed in, holds
-  an account, not deleting, not already claimed, well-formed code, live claim, not
-  expired, not its own session, guest no longer connected, neither side in a battle,
-  and the account owns no game data yet. Then `rekey_all` moves the guest's persistent
-  game data (monsters and their public projection, evolution notices, inventory,
+  reaper. After sign-in, the account calls `complete_guest_claim(code)`. Guards run in
+  order: signed in, holds an account, not deleting, not already claimed, well-formed code,
+  live claim, not expired, not its own session, guest no longer connected, neither side in a
+  battle, and the account owns no game data yet. Then `rekey_all` moves the guest's
+  persistent game data (monsters and their public projection, evolution notices, inventory,
   quests and dialogue state, heal cooldown, saved position, wallet, profile, formation and
   handle) onto the account; the retired guest keeps a tombstone dialogue row (see The
   starter). Then the guest's export bundles are purged; its world rows (admission and
-  wrong-password record, binding and bind nonce, `world_account` row with its armed re-check,
-  move record) are erased, not moved, so a retired guest identity that reconnects holds no
-  world row; its finished battles are erased as the deletion cascade erases its subject's
-  (`schema::erase_tactical_rows`, then `battle::anonymize_battles`: the per-battle tactical
-  rows go, and the guest's side of each `battle` and `battle_summary` row becomes the
-  tombstone identity); the code is consumed, and `claimed_from`/`claimed_at_ms` are stamped. Session and in-flight rows (player,
-  conversation, sessions, battles, trades, challenges) are not moved.
-  "Owns no game data" works because `join_game` is a reducer the client calls, not
-  part of `on_connect`: on a signed-in connection with an unconsumed claim code
-  stored, `net/connection.ts` skips `join_game` and calls `complete_guest_claim`
-  first. It joins only once no unconsumed code remains, or the player declines the
-  claim. An account that already played before claiming fails the claim with "already
-  has game data".
+  wrong-password record, binding and bind nonce, `world_account` row with its armed
+  re-check, move record) are erased, not moved, so a retired guest identity that reconnects
+  holds no world row; its finished battles are erased as the deletion cascade erases its
+  subject's (`schema::erase_tactical_rows`, then `battle::anonymize_battles`: the per-battle
+  tactical rows go, and the guest's side of each `battle` and `battle_summary` row becomes
+  the tombstone identity); the code is consumed, and `claimed_from`/`claimed_at_ms` are
+  stamped. Session and in-flight rows (player, conversation, sessions, battles, trades,
+  challenges) are not moved. "Owns no game data" works because `join_game` is a reducer the
+  client calls, not part of `on_connect`: on a signed-in connection with an unconsumed claim
+  code stored, `net/connection.ts` skips `join_game` and calls `complete_guest_claim` first.
+  It joins only once no unconsumed code remains, or the player declines the claim. An
+  account that already played before claiming fails the claim with "already has game data".
 - **Deletion.** `delete_account` sets `PendingDeletion` and arms a one-shot reaper
   `DELETION_GRACE_MS_DEFAULT` (7 days, `game-core/src/accounts/deletion.rs`) out;
   `cancel_account_deletion` reverses it and declines trade offers made to the account,
@@ -1249,8 +1247,8 @@ root, so opening one never closes a sibling.
 - **Server.** The module emits JSON log lines. New code uses `observability::mr_log`;
   refusals go through `guards::log_reject`. A 60 s `mr_heartbeat` logs the deployed content
   version and writes nothing. In a world with nobody connected it is the only schedule but
-  the hourly `host_account_check` tick, which runs only once the host has marked its own
-  account, and it stays on purpose: it is the operator's dead-man's switch for the whole
+  the hourly `host_account_check` tick, which runs only once the owner has named the host's
+  identity, and it stays on purpose: it is the operator's dead-man's switch for the whole
   server (the `AlloyIngestStalled` alert reads ten minutes without module log bytes as a
   stalled log pipeline, and an empty world logs nothing else). Zone ticks and reapers are
   armed only while something needs them. The module never measures time itself and makes no

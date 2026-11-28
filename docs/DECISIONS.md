@@ -1243,13 +1243,13 @@ it off wasm. So the workspace builds both crates from copies of their crates.io 
 only by `#[cfg]` attributes that send native code down the branch wasm takes, each with a change
 notice. A procedure runs natively through more such attributes: the host puts an aborted
 transaction's rows back and answers each HTTP request from a queue the test stubs, so a procedure's
-request opens no connection. A native test of a procedure that sleeps adds two more such attributes
-and a host function. A test proves each copy, with the patch undone, matches the crates.io release,
-and that every changed line is such an attribute selecting on wasm what the original selected; every
-SpacetimeDB hop re-copies both crates, re-records their hashes and re-applies the patch. CI's
-dependency audit skips packages not from crates.io, so these two are checked at each hop, in release
-notes and advisories, until CI audits them by name and version. The alternatives and the
-measurements behind the choice are in `docs/spacetimedb-2.16.md` ("The vendor's unit-test harness").
+request opens no connection. A test proves each copy, with the patch undone, matches the crates.io
+release, and that every changed line is such an attribute selecting on wasm what the original
+selected; every SpacetimeDB hop re-copies both crates, re-records their hashes and re-applies the
+patch. CI's dependency audit skips packages not from crates.io, so these two are checked at each
+hop, in release notes and advisories, until CI audits them by name and version. The alternatives and
+the measurements behind the choice are in `docs/spacetimedb-2.16.md` ("The vendor's unit-test
+harness").
 
 **Why.** The module's privacy and netcode rules are checked on what a transaction does as the host
 sees it: every write a subscriber is sent, an unchanged update included; each shipped view, run
