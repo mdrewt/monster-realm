@@ -1,8 +1,8 @@
 // The hand-off port: what the client hands to the operating system of whatever hosts its page.
 //
 // Each function holds the browser's code, and every host runs it. The module imports no client
-// module and registers nothing on `window` or `document`; it reads those globals and `URL` at the
-// moment of each call.
+// module and registers nothing on `window` or `document`; it reads those globals, `URL` and `Blob`
+// at the moment of each call.
 
 /** A file the client generated, as `saveFile` writes it. */
 export interface SavedFile {

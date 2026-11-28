@@ -8,7 +8,8 @@ lists, and the duplication found across `client/src/`. Section 4 is the one orde
 extractions, each one slice. The decision and what it rules out are in `docs/DECISIONS.md`
 ("The client reaches its host through ports cut where a second host needs one").
 
-Everything here is measured at commit `192b8b3d`. "Non-test file" means a `.ts` file under
+Everything here is measured at commit `192b8b3d`, except a row an extraction has rewritten, which
+describes the code after that extraction. "Non-test file" means a `.ts` file under
 `client/src` that is not a `*.test.ts`, not a `*.d.ts` and not under `module_bindings/`: 198
 files, about 51,700 lines.
 
@@ -293,10 +294,10 @@ none is dropped.
 | 17 | `shell/input.ts` | kept; takes the pad poll | 14 |
 | 18 | `shell/devHooks.ts` | kept; takes `MrSessionOffer`, `mrSessionOffer` | 15 |
 
-All twelve keep their relative order. They are reordered only against the new work: the hand-off
-port their moved code calls in `account.ts` and `menu.ts` exists (`platform/handoff.ts`), and
-extractions 2 and 3 of section 4 land first, because 2 gives `account.ts` the issuer its sign-in
-offer is built from and 3 removes the cycles.
+All twelve keep their relative order. They are reordered only against the new work: extractions
+2 and 3 of section 4 land first, because 2 gives `account.ts` the issuer its sign-in offer is
+built from and 3 removes the cycles. The code that moves into `account.ts` and `menu.ts` calls the
+hand-off port, `platform/handoff.ts`.
 
 ## 3. Duplication and structure across `client/src/`
 
@@ -321,7 +322,7 @@ finding below was checked against the code again before it was written down.
 | D5 | twelve identical insert, update and delete registrations | `net/connection.ts` (`wireTables`) | extraction 20: one local helper, the registration order unchanged |
 | D6 | the battle panels' element helper (four copies), root and title (three), countdown line (two) | `tactics/clock.ts`, `tactics/hud.ts`, `tactics/deployPanel.ts`, `tactics/results.ts`, `tactics/tacticsBattle.ts` | extraction 21: `tactics/panelParts.ts` |
 | D7 | store-to-view-model mappers in the wasm port's file | `tactics/wasm.ts` (`shellKind`, `activeUnitOf`, `statusTagOf`, `intentKind`, `overlaySets`, `unitRowOf`) | extraction 22: `tactics/storeMap.ts` |
-| D8 | the Blob, object URL and hidden anchor of a download, twice | `main.ts` (`downloadExportBundle`, `downloadBugBundle`) | `saveFile` in `platform/handoff.ts` holds the export's steps; the bug bundle differs in its cleanup on a failure and joins through finding F3 |
+| D8 | the Blob, object URL and hidden anchor of a download, twice | `platform/handoff.ts` (`saveFile`, which the export calls), `main.ts` (`downloadBugBundle`) | `saveFile` in `platform/handoff.ts` holds the export's steps; the bug bundle differs in its cleanup on a failure and joins through finding F3 |
 | D9 | `globalThis` handed as the host at ten call sites | `net/connection.ts` (`connect`) | not worth moving: one local alias saves ten identical words and changes no dependency; `connect` takes a host option when a shell supplies a credential |
 | D10 | "if the view is open, refresh it" batch listeners with the same inner `try` | `main.ts` (quest log, heal, shop, leaderboard, challenges) | not worth moving: extraction 9 moves them whole; their guards and log tags differ, and a helper saves under thirty lines |
 | D11 | SDK row and store row types mirror each other | `net/rowConvert.ts`, `net/store.ts`, `ui/exportAssembly.ts` | not worth moving: they are the two sides of the conversion boundary and differ at identity, enums and essence |

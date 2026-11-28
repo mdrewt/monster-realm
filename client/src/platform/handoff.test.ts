@@ -3,27 +3,42 @@
 // `saveFile` offers a generated file through a temporary object URL and download anchor, calls
 // its blocked handler when the host refuses any step, and always releases the anchor and the URL.
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { SavedFile } from './handoff';
 import { openExternal, saveFile } from './handoff';
 
-type SavedFile = Parameters<typeof saveFile>[0];
+const E_ACUTE = String.fromCharCode(0x00e9);
+const LONG_NAME = `Donn${E_ACUTE}es de joueur ${E_ACUTE.repeat(200)}.json`;
 
-const EXPORT_FILE: SavedFile = {
+const EXPORT_FILE: SavedFile = Object.freeze({
   name: 'monster-realm-export-req7-20261128.json',
   mimeType: 'application/json',
   text: '{"party":[{"species":"emberkit","level":5}]}',
-};
+});
 
-const NOTES_FILE: SavedFile = {
+const NOTES_FILE: SavedFile = Object.freeze({
   name: 'field notes 2.csv',
   mimeType: 'text/csv',
   text: 'route,seen\nmeadow,3\n',
-};
+});
 
+const EMPTY_FILE: SavedFile = Object.freeze({
+  name: 'empty.json',
+  mimeType: 'application/json',
+  text: '',
+});
+
+const LONG_NAME_FILE: SavedFile = Object.freeze({
+  name: LONG_NAME,
+  mimeType: 'application/json',
+  text: '{}',
+});
+
+/** Read at call time, so a test can lift a fault between two saves. */
 interface HostFaults {
-  readonly createUrl?: boolean;
-  readonly createElement?: boolean;
-  readonly append?: boolean;
-  readonly click?: boolean;
+  createUrl?: boolean;
+  createElement?: boolean;
+  append?: boolean;
+  click?: boolean;
 }
 
 interface ClickView {
@@ -102,7 +117,7 @@ function installHost(faults: HostFaults = {}): HostLog {
   return log;
 }
 
-function recordingBlocked(log: HostLog): () => void {
+function recordingBlocked(log: HostLog) {
   return vi.fn((): void => {
     log.events.push('onBlocked');
   });
@@ -113,30 +128,43 @@ function anchorsInBody(): number {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   for (const anchor of Array.from(document.body.querySelectorAll('a'))) anchor.remove();
+  localStorage.clear();
+  sessionStorage.clear();
 });
 
 describe('openExternal', () => {
-  // The URL is passed through as given, in a new tab with no opener.
+  // The URL is passed through byte for byte, in a new tab with no opener.
   it.each([
     'https://store.example/monster-realm',
     'https://example.org/other/page?ref=menu',
+    'HTTPS://Store.Example',
+    'https://store.example/app#reviews',
   ])('opens %s with exactly one window.open(url, "_blank", "noopener") call', (url) => {
     const open = vi.spyOn(window, 'open').mockImplementation(() => null);
-    openExternal(url);
+    expect(openExternal(url)).toBeUndefined();
     expect(open.mock.calls).toEqual([[url, '_blank', 'noopener']]);
   });
 
-  // A blocked popup (window.open returning null) is not an error.
-  it('returns undefined and does not throw when window.open returns null', () => {
+  // A blocked popup is not retried and does not navigate this page instead.
+  it('leaves this page where it is and does not retry when window.open returns null', () => {
     const open = vi.spyOn(window, 'open').mockImplementation(() => null);
-    let result: unknown = 'not called';
+    const before = window.location.href;
     expect(() => {
-      result = openExternal('https://store.example/monster-realm');
+      openExternal('https://store.example/monster-realm');
     }).not.toThrow();
-    expect(result).toBeUndefined();
+    expect(window.location.href).toBe(before);
     expect(open).toHaveBeenCalledTimes(1);
+  });
+
+  it('makes one call and nothing else when window.open returns a window', () => {
+    const open = vi.spyOn(window, 'open').mockImplementation(() => ({}) as Window);
+    const before = window.location.href;
+    openExternal('https://store.example/app#reviews');
+    expect(open.mock.calls).toEqual([['https://store.example/app#reviews', '_blank', 'noopener']]);
+    expect(window.location.href).toBe(before);
   });
 });
 
@@ -156,34 +184,55 @@ describe('saveFile on a host that allows the download', () => {
 
   // The object URL wraps a real Blob carrying the file's type and text.
   it.each([
-    EXPORT_FILE,
-    NOTES_FILE,
-  ])('hands createObjectURL a Blob of type $mimeType holding the file text', async (file) => {
+    {
+      file: EXPORT_FILE,
+      mimeType: 'application/json',
+      text: '{"party":[{"species":"emberkit","level":5}]}',
+    },
+    { file: NOTES_FILE, mimeType: 'text/csv', text: 'route,seen\nmeadow,3\n' },
+  ])('hands createObjectURL a Blob of type $mimeType holding the file text', async ({
+    file,
+    mimeType,
+    text,
+  }) => {
     const log = installHost();
     saveFile(file, recordingBlocked(log));
     expect(log.blobs).toHaveLength(1);
     const blob = log.blobs[0];
     expect(blob).toBeInstanceOf(Blob);
-    expect((blob as Blob).type).toBe(file.mimeType);
-    expect(await (blob as Blob).text()).toBe(file.text);
+    expect((blob as Blob).type).toBe(mimeType);
+    expect(await (blob as Blob).text()).toBe(text);
   });
 
-  it('uses the literal application/json type for a JSON file', () => {
-    const log = installHost();
-    saveFile(EXPORT_FILE, recordingBlocked(log));
-    expect((log.blobs[0] as Blob).type).toBe('application/json');
-  });
-
-  // Read at click time: the removed anchor keeps its attributes, so only the click shows the live state.
+  // Read at click time: once saveFile returns, the anchor is out of the document, so only the click shows it was in the body.
   it.each([
-    EXPORT_FILE,
-    NOTES_FILE,
-  ])('clicks an anchor in document.body whose href is the object URL and download is "$name"', (file) => {
+    { file: EXPORT_FILE, name: 'monster-realm-export-req7-20261128.json' },
+    { file: NOTES_FILE, name: 'field notes 2.csv' },
+  ])('clicks an anchor in document.body whose href is the object URL and download is "$name"', ({
+    file,
+    name,
+  }) => {
     const log = installHost();
     saveFile(file, recordingBlocked(log));
-    expect(log.clicks).toEqual([
-      { inBody: true, href: 'blob:handoff-test-0', download: file.name },
+    expect(log.clicks).toEqual([{ inBody: true, href: 'blob:handoff-test-0', download: name }]);
+  });
+
+  it('offers a long non-ASCII file name exactly as given', () => {
+    const log = installHost();
+    saveFile(LONG_NAME_FILE, recordingBlocked(log));
+    expect(log.clicks.map((c) => c.download)).toEqual([
+      `Donn${E_ACUTE}es de joueur ${E_ACUTE.repeat(200)}.json`,
     ]);
+  });
+
+  it('still offers a file whose text is empty', async () => {
+    const log = installHost();
+    const onBlocked = recordingBlocked(log);
+    saveFile(EMPTY_FILE, onBlocked);
+    expect(log.events.filter((e) => e === 'createObjectURL')).toHaveLength(1);
+    expect(log.clicks.map((c) => c.download)).toEqual(['empty.json']);
+    expect(await (log.blobs[0] as Blob).text()).toBe('');
+    expect(onBlocked).not.toHaveBeenCalled();
   });
 
   it('leaves no anchor behind, revokes the same URL once and never calls onBlocked', () => {
@@ -194,7 +243,6 @@ describe('saveFile on a host that allows the download', () => {
     const anchor = log.appended[0] as HTMLAnchorElement;
     expect(anchor.isConnected).toBe(false);
     expect(anchorsInBody()).toBe(0);
-    expect(log.revoked).toEqual([log.urls[0]]);
     expect(log.revoked).toEqual(['blob:handoff-test-0']);
     expect(onBlocked).not.toHaveBeenCalled();
   });
@@ -205,7 +253,10 @@ describe('saveFile on a host that allows the download', () => {
     saveFile(EXPORT_FILE, recordingBlocked(log));
     saveFile(NOTES_FILE, recordingBlocked(log));
     expect(log.revoked).toEqual(['blob:handoff-test-0', 'blob:handoff-test-1']);
-    expect(log.clicks.map((c) => c.download)).toEqual([EXPORT_FILE.name, NOTES_FILE.name]);
+    expect(log.clicks.map((c) => c.download)).toEqual([
+      'monster-realm-export-req7-20261128.json',
+      'field notes 2.csv',
+    ]);
     expect(anchorsInBody()).toBe(0);
   });
 });
@@ -218,7 +269,7 @@ describe('saveFile on a host that blocks the download', () => {
     expect(() => {
       saveFile(EXPORT_FILE, onBlocked);
     }).not.toThrow();
-    expect(onBlocked).toHaveBeenCalledTimes(1);
+    expect(onBlocked.mock.calls).toEqual([[]]);
     expect(log.events).toEqual(['createObjectURL', 'onBlocked']);
     expect(log.appended).toEqual([]);
     expect(log.revoked).toEqual([]);
@@ -231,7 +282,7 @@ describe('saveFile on a host that blocks the download', () => {
     expect(() => {
       saveFile(EXPORT_FILE, onBlocked);
     }).not.toThrow();
-    expect(onBlocked).toHaveBeenCalledTimes(1);
+    expect(onBlocked.mock.calls).toEqual([[]]);
     expect(log.appended).toEqual([]);
     expect(log.events).toEqual(['createObjectURL', 'onBlocked', 'revokeObjectURL']);
     expect(log.revoked).toEqual(['blob:handoff-test-0']);
@@ -243,7 +294,7 @@ describe('saveFile on a host that blocks the download', () => {
     expect(() => {
       saveFile(EXPORT_FILE, onBlocked);
     }).not.toThrow();
-    expect(onBlocked).toHaveBeenCalledTimes(1);
+    expect(onBlocked.mock.calls).toEqual([[]]);
     expect(anchorsInBody()).toBe(0);
     expect(log.clicks).toEqual([]);
     expect(log.revoked).toEqual(['blob:handoff-test-0']);
@@ -256,7 +307,7 @@ describe('saveFile on a host that blocks the download', () => {
     expect(() => {
       saveFile(EXPORT_FILE, onBlocked);
     }).not.toThrow();
-    expect(onBlocked).toHaveBeenCalledTimes(1);
+    expect(onBlocked.mock.calls).toEqual([[]]);
     expect(log.events).toEqual([
       'createObjectURL',
       'appendChild:A',
@@ -289,6 +340,71 @@ describe('saveFile on a host that blocks the download', () => {
     expect(log.events.slice(-3)).toEqual(['onBlocked', 'remove', 'revokeObjectURL']);
     expect(anchorsInBody()).toBe(0);
     expect(log.revoked).toEqual(['blob:handoff-test-0']);
+  });
+
+  // A block leaves nothing latched: the next save on a healthy host goes through.
+  it('saves normally on the next call after a blocked save', () => {
+    const faults: HostFaults = { createUrl: true };
+    const log = installHost(faults);
+    const firstBlocked = recordingBlocked(log);
+    saveFile(EXPORT_FILE, firstBlocked);
+    expect(firstBlocked.mock.calls).toEqual([[]]);
+    faults.createUrl = false;
+    const secondBlocked = recordingBlocked(log);
+    saveFile(NOTES_FILE, secondBlocked);
+    expect(secondBlocked).not.toHaveBeenCalled();
+    expect(log.clicks.map((c) => c.download)).toEqual(['field notes 2.csv']);
+    expect(log.revoked).toEqual(['blob:handoff-test-0']);
+  });
+});
+
+describe('saveFile side effects', () => {
+  // Nothing but the download happens: no log, storage, network, timer, deferred work or DOM residue.
+  it.each([
+    { outcome: 'allowed', faults: {}, revokes: 1, blocks: 0 },
+    { outcome: 'blocked', faults: { createUrl: true }, revokes: 0, blocks: 1 },
+  ])('writes nothing outside the download when the save is $outcome', async ({
+    faults,
+    revokes,
+    blocks,
+  }) => {
+    vi.useFakeTimers();
+    const log = installHost({ ...faults });
+    const consoleSpies = [
+      vi.spyOn(console, 'log').mockImplementation(() => undefined),
+      vi.spyOn(console, 'error').mockImplementation(() => undefined),
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined),
+      vi.spyOn(console, 'info').mockImplementation(() => undefined),
+      vi.spyOn(console, 'debug').mockImplementation(() => undefined),
+    ];
+    localStorage.clear();
+    sessionStorage.clear();
+    const fetchSpies: { readonly mock: { readonly calls: readonly unknown[] } }[] = [];
+    for (const host of new Set<object>([window, globalThis])) {
+      if (typeof (host as { fetch?: unknown }).fetch === 'function') {
+        fetchSpies.push(
+          vi
+            .spyOn(host as { fetch: typeof fetch }, 'fetch')
+            .mockImplementation(() => new Promise<Response>(() => undefined)),
+        );
+      }
+    }
+    const onBlocked = vi.fn();
+    const htmlBefore = document.documentElement.outerHTML;
+
+    saveFile(EXPORT_FILE, onBlocked);
+    const eventsAtReturn = [...log.events];
+    await Promise.resolve();
+
+    expect(onBlocked).toHaveBeenCalledTimes(blocks);
+    expect(consoleSpies.map((s) => s.mock.calls.length)).toEqual([0, 0, 0, 0, 0]);
+    expect(localStorage.length).toBe(0);
+    expect(sessionStorage.length).toBe(0);
+    expect(fetchSpies.map((s) => s.mock.calls.length)).toEqual(fetchSpies.map(() => 0));
+    expect(vi.getTimerCount()).toBe(0);
+    expect(document.documentElement.outerHTML).toBe(htmlBefore);
+    expect(log.events).toEqual(eventsAtReturn);
+    expect(log.events.filter((e) => e === 'revokeObjectURL')).toHaveLength(revokes);
   });
 });
 

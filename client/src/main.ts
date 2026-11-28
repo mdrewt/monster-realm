@@ -1100,7 +1100,7 @@ store.onBatchApplied(() => {
   if (privacyView?.visible) renderPrivacy();
 });
 
-// A3-D3: offered behind a gesture, never auto-downloaded — chunks re-arrive on every applied
+// Offered behind a gesture, never auto-downloaded — chunks re-arrive on every applied
 // snapshot, so an automatic save would re-fire on each reconnect, and browsers block non-gesture
 // downloads outright.
 function downloadExportBundle(): void {
